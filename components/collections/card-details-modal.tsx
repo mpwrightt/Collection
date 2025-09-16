@@ -38,7 +38,8 @@ import {
   Hash,
   Sparkles,
   Info,
-  ChevronRight
+  ChevronRight,
+  ExternalLink
 } from "lucide-react"
 import {
   LineChart,
@@ -219,6 +220,18 @@ export function CardDetailsModal({
             <div className="flex items-center gap-2">
               {!isEditing ? (
                 <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const url = card?.tcgPlayerUrl || details?.url || `https://www.tcgplayer.com/product/${card?.productId}`
+                      window.open(url, '_blank')
+                    }}
+                    className="text-blue-500 hover:text-blue-600"
+                  >
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    View on TCGPlayer
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"

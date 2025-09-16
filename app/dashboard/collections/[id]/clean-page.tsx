@@ -82,6 +82,7 @@ type CardView = {
   priceChange: number
   rarity: string
   foil: boolean
+  tcgPlayerUrl: string
 }
 
 const CONDITIONS = [
@@ -275,9 +276,10 @@ export default function CleanFolderDetailPage() {
         priceChange: 0,
         rarity: 'rare',
         foil: false,
+        tcgPlayerUrl: itemUrls[pidKey] ?? `https://www.tcgplayer.com/product/${it.productId}`,
       }
     })
-  }, [items, itemNames, itemThumbs, itemPrices])
+  }, [items, itemNames, itemThumbs, itemPrices, itemUrls])
 
   // Filter and sort cards
   const filteredCards = React.useMemo(() => {
@@ -454,6 +456,17 @@ export default function CleanFolderDetailPage() {
             <Button
               variant="ghost"
               size="icon"
+              onClick={(e) => {
+                e.stopPropagation()
+                window.open(card.tcgPlayerUrl, '_blank')
+              }}
+              className="text-blue-500 hover:text-blue-600"
+            >
+              <ExternalLink className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={async () => { try { await removeItem({ itemId: card._id as any }) } catch {} }}
               className="text-destructive"
             >
@@ -553,8 +566,19 @@ export default function CleanFolderDetailPage() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  className="h-8 w-8 text-blue-500 hover:text-blue-600"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    window.open(card.tcgPlayerUrl, '_blank')
+                  }}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={async () => { try { await removeItem({ itemId: card._id as any }) } catch {} }}
-                  className="text-destructive"
+                  className="text-destructive h-8 w-8"
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -676,7 +700,10 @@ export default function CleanFolderDetailPage() {
                 <CardDetailsModal
                   open={detailsModalOpen}
                   onOpenChange={setDetailsModalOpen}
-                  card={selectedCardForDetails}
+                  card={{
+                    ...selectedCardForDetails,
+                    tcgPlayerUrl: selectedCardForDetails?.tcgPlayerUrl || itemUrls[String(selectedCardForDetails?.productId)] || `https://www.tcgplayer.com/product/${selectedCardForDetails?.productId}`
+                  }}
                   onUpdateCard={handleUpdateCard}
                   onDeleteCard={handleDeleteCard}
                   getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
