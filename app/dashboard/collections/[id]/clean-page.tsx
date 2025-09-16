@@ -127,7 +127,8 @@ export default function CleanFolderDetailPage() {
   // Convex queries/actions for real data
   const collectionId = params.id as any
   const isRealCollectionId = React.useMemo(() => !/^demo-/i.test(String(params.id)), [params.id])
-  const items = useQuery(api.collections.listItems, isRealCollectionId ? { collectionId } : ({} as any)) || []
+  const itemsData = useQuery(api.collections.listItems, isRealCollectionId ? { collectionId } : ({} as any))
+  const items = React.useMemo(() => itemsData ?? [], [itemsData])
   const summary = useQuery(api.collections.collectionSummary, isRealCollectionId ? ({ collectionId } as any) : "skip") || { totalQuantity: 0, distinctProducts: 0, estimatedValue: 0 }
   const allCollections = useQuery(api.collections.listCollections, ({} as any)) || []
 
@@ -185,7 +186,7 @@ export default function CleanFolderDetailPage() {
         // Non-fatal; UI will show fallbacks
       }
     })()
-  }, [items, getProductDetails, getProductPrices])
+  }, [items])
 
   // Build render cards from real items
   const renderCards = React.useMemo(() => {
