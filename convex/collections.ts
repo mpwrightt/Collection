@@ -135,6 +135,22 @@ export const removeItem = mutation({
   },
 });
 
+// Update quantity for an item
+export const updateItemQuantity = mutation({
+  args: { itemId: v.id("collectionItems"), quantity: v.number() },
+  handler: async (ctx, { itemId, quantity }) => {
+    const user = await getOrCreateCurrentUser(ctx as any);
+    const item = await ctx.db.get(itemId);
+    if (!item || item.userId !== user._id) throw new Error("Item not found");
+    const q = Math.max(0, Math.floor(quantity));
+    if (q === 0) {
+      await ctx.db.delete(itemId);
+      return;
+    }
+    await ctx.db.patch(itemId, { quantity: q, updatedAt: Date.now() });
+  },
+});
+
 // Delete a collection (only if empty) or cascade=false by default
 export const deleteCollection = mutation({
   args: { collectionId: v.id("collections") },
@@ -219,5 +235,56 @@ export const collectionSummary = query({
       estimatedValue += (it.quantity ?? 0) * market;
     }
     return { totalQuantity, distinctProducts, estimatedValue };
+  }
+});
+
+// Get overall collection statistics for the user
+export const getCollectionStats = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getCurrentUser(ctx);
+    if (!user) return { totalCards: 0, totalValue: 0, totalFolders: 0 };
+    
+    // Get all user's collections
+    const collections = await ctx.db
+      .query("collections")
+      .withIndex("byUserId", (q) => q.eq("userId", user._id))
+      .collect();
+    
+    // Get all user's items
+    const items = await ctx.db
+      .query("collectionItems")
+      .withIndex("byUserId", (q) => q.eq("userId", user._id))
+      .collect();
+    
+    // Calculate total cards
+    const totalCards = items.reduce((sum, item) => sum + (item.quantity ?? 0), 0);
+    
+    // Calculate total value
+    let totalValue = 0;
+    for (const item of items) {
+      const price = await ctx.db
+        .query("pricingCache")
+        .withIndex("byProductId", (q) => q.eq("productId", item.productId))
+        .unique();
+      
+      let market = 0;
+      if (price?.data) {
+        if (typeof (price as any).data?.marketPrice === 'number') {
+          market = (price as any).data.marketPrice;
+        } else if (Array.isArray((price as any).data?.results) && (price as any).data.results[0]?.marketPrice) {
+          market = Number((price as any).data.results[0].marketPrice) || 0;
+        } else if (Array.isArray((price as any).data?.Results) && (price as any).data.Results[0]?.marketPrice) {
+          market = Number((price as any).data.Results[0].marketPrice) || 0;
+        }
+      }
+      totalValue += (item.quantity ?? 0) * market;
+    }
+    
+    return {
+      totalCards,
+      totalValue,
+      totalFolders: collections.length
+    };
   }
 });

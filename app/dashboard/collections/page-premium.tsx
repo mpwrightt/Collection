@@ -6,12 +6,11 @@ import { useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { SignedIn, SignedOut, SignInButton } from "@clerk/nextjs"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
-import { CreateFolderDialog } from "@/components/collections/create-folder-dialog"
 import {
   Plus,
   Search,
@@ -81,12 +80,12 @@ interface CollectionFolder {
   _id: string
   name: string
   itemCount: number
-  estimatedValue?: number
-  valueChange?: number
-  lastUpdated?: string
-  icon?: string
-  color?: string
-  tags?: string[]
+  estimatedValue: number
+  valueChange: number
+  lastUpdated: string
+  icon: string
+  color: string
+  tags: string[]
   featured?: boolean
   grade?: 'S' | 'A' | 'B' | 'C'
 }
@@ -114,119 +113,46 @@ const GRADE_BADGES = {
   'C': { color: "from-gray-400 to-gray-600", label: "Standard", icon: Package },
 }
 
-// Demo mode enabled when Convex url is not configured at build time
-const DEMO_MODE = !process.env.NEXT_PUBLIC_CONVEX_URL
-
-// Demo data for testing
-const DEMO_FOLDERS = [
-  {
-    _id: "demo-1",
-    name: "Vintage Pokemon Collection",
-    itemCount: 342,
-    estimatedValue: 15420.50,
-    valueChange: 12.3,
-    lastUpdated: new Date().toISOString(),
-    icon: "folder",
-    color: "from-yellow-500 to-amber-600",
-    tags: ["pokemon", "vintage", "1st edition"],
-    featured: true,
-    grade: 'S' as const
-  },
-  {
-    _id: "demo-2",
-    name: "Modern MTG Masters",
-    itemCount: 156,
-    estimatedValue: 8250.00,
-    valueChange: -2.1,
-    lastUpdated: new Date(Date.now() - 86400000).toISOString(),
-    icon: "folder",
-    color: "from-purple-500 to-purple-600",
-    tags: ["magic", "modern", "competitive"],
-    featured: false,
-    grade: 'A' as const
-  },
-  {
-    _id: "demo-3",
-    name: "Yu-Gi-Oh Tournament Deck",
-    itemCount: 89,
-    estimatedValue: 3420.75,
-    valueChange: 5.7,
-    lastUpdated: new Date(Date.now() - 172800000).toISOString(),
-    icon: "folder",
-    color: "from-blue-500 to-blue-600",
-    tags: ["yugioh", "tournament", "meta"],
-    featured: true,
-    grade: 'B' as const
-  },
-  {
-    _id: "demo-4",
-    name: "One Piece Card Game",
-    itemCount: 234,
-    estimatedValue: 6890.25,
-    valueChange: 18.9,
-    lastUpdated: new Date().toISOString(),
-    icon: "folder",
-    color: "from-red-500 to-red-600",
-    tags: ["one-piece", "new", "trending"],
-    featured: true,
-    grade: 'A' as const
-  }
-]
-
-export default function CollectionsPage() {
+export default function PremiumCollectionsPage() {
   const router = useRouter()
-  
-  // Convex queries and mutations
-  const folders = DEMO_MODE ? DEMO_FOLDERS : (useQuery(api.collections.listCollectionsWithCounts, { parentId: undefined }) || [])
-  const createCollection = useMutation(api.collections.createCollection)
-  const updateCollection = useMutation(api.collections.updateCollection)
-  const deleteCollection = useMutation(api.collections.deleteCollection)
-  
-  // Get collection stats
-  const collectionStats = DEMO_MODE ? {
-    totalCards: DEMO_FOLDERS.reduce((s, f) => s + f.itemCount, 0),
-    totalValue: DEMO_FOLDERS.reduce((s, f) => s + (f.estimatedValue || 0), 0),
-    totalFolders: DEMO_FOLDERS.length
-  } : (useQuery(api.collections.getCollectionStats) || { 
+  const [viewMode, setViewMode] = React.useState<"grid" | "list" | "gallery" | "compact">("grid")
+  const [sortBy, setSortBy] = React.useState("value-high")
+  const [searchQuery, setSearchQuery] = React.useState("")
+  const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
+
+  // Convex queries
+  const folders = useQuery(api.collections.listCollectionsWithCounts, { parentId: undefined }) || []
+  const collectionStats = useQuery(api.collections.getCollectionStats) || { 
     totalCards: 0, 
     totalValue: 0, 
     totalFolders: folders.length 
-  })
-  
-  // UI State
-  const [viewMode, setViewMode] = React.useState<'grid' | 'list' | 'gallery' | 'compact'>('grid')
-  const [sortBy, setSortBy] = React.useState('value-high')
-  const [searchQuery, setSearchQuery] = React.useState('')
-  const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
-  const [busyId, setBusyId] = React.useState<string | null>(null)
-  const [isLoading, setIsLoading] = React.useState(false)
+  }
 
-  // Process folders with enhanced data
+  // Process folders with mock enhanced data
   const enhancedFolders = React.useMemo(() => {
-    const base = folders as any[]
-    return base.map((folder: any) => ({
+    return folders.map((folder: any) => ({
       ...folder,
-      estimatedValue: folder.estimatedValue ?? 0,
-      valueChange: folder.valueChange ?? 0,
-      lastUpdated: folder.updatedAt || folder.createdAt || new Date().toISOString(),
+      estimatedValue: Math.random() * 10000,
+      valueChange: (Math.random() - 0.5) * 20,
+      lastUpdated: folder.updatedAt || folder.createdAt,
       icon: "folder",
       color: "from-blue-500 to-blue-600",
-      tags: folder.labels || [],
-      featured: Boolean(folder.featured),
-      grade: (folder.grade as any) || 'A'
+      tags: ["pokemon", "vintage"],
+      featured: Math.random() > 0.7,
+      grade: ['S', 'A', 'B', 'C'][Math.floor(Math.random() * 4)] as any
     }))
   }, [folders])
 
   // Filter and sort folders
   const filteredFolders = React.useMemo(() => {
     let filtered = [...enhancedFolders]
-    
+
     if (searchQuery) {
       filtered = filtered.filter(f => 
         f.name.toLowerCase().includes(searchQuery.toLowerCase())
       )
     }
-    
+
     filtered.sort((a, b) => {
       switch (sortBy) {
         case "value-high":
@@ -245,72 +171,9 @@ export default function CollectionsPage() {
           return 0
       }
     })
-    
+
     return filtered
   }, [enhancedFolders, searchQuery, sortBy])
-
-  async function handleCreateFolder(data: { 
-    name: string
-    description: string
-    color: string
-    icon: string 
-  }) {
-    setIsLoading(true)
-    try {
-      await createCollection({ 
-        name: data.name,
-        description: data.description,
-        labels: [`color:${data.color}`, `icon:${data.icon}`]
-      })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  async function handleRenameFolder(id: string) {
-    const folder = folders.find((f: any) => f._id === id)
-    const name = window.prompt("Rename folder", folder?.name || "")
-    if (!name) return
-    
-    setBusyId(id)
-    try {
-      await updateCollection({ collectionId: id as any, name })
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function handleDeleteFolder(id: string) {
-    const folder = folders.find((f: any) => f._id === id)
-    if (!window.confirm(`Delete "${folder?.name}"? This folder must be empty.`)) return
-    
-    setBusyId(id)
-    try {
-      await deleteCollection({ collectionId: id as any })
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function handleDuplicateFolder(id: string) {
-    const folder = folders.find((f: any) => f._id === id)
-    if (!folder) return
-    
-    setBusyId(id)
-    try {
-      await createCollection({ 
-        name: `${folder.name} (Copy)`,
-        description: folder.description,
-        labels: folder.labels
-      })
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  const handleOpenFolder = (id: string) => {
-    router.push(`/dashboard/collections/${id}`)
-  }
 
   // Calculate portfolio stats
   const portfolioStats = React.useMemo(() => {
@@ -345,14 +208,13 @@ export default function CollectionsPage() {
     const grade = GRADE_BADGES[folder.grade || 'C']
     const GradeIcon = grade.icon
 
-    const summary = DEMO_MODE ? null : (useQuery(api.collections.collectionSummary, { collectionId: folder._id as any }) || null)
     return (
-      <div 
+      <Card 
         className={cn(
           "group relative overflow-hidden transition-all duration-300 cursor-pointer",
           "hover:scale-[1.02] hover:shadow-2xl",
           "bg-gradient-to-br from-background/95 via-background/80 to-muted/20",
-          "backdrop-blur-xl border-muted-foreground/10 rounded-lg border",
+          "backdrop-blur-xl border-muted-foreground/10",
           folder.featured && "ring-2 ring-primary/50"
         )}
         onClick={() => router.push(`/dashboard/collections/${folder._id}`)}
@@ -373,7 +235,7 @@ export default function CollectionsPage() {
           folder.color
         )} />
 
-        <div className="p-6 relative">
+        <CardContent className="p-6 relative">
           {/* Header */}
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center gap-3">
@@ -390,7 +252,7 @@ export default function CollectionsPage() {
                   <Badge variant="secondary" className="text-xs">
                     {folder.itemCount} cards
                   </Badge>
-                  {folder.tags?.map((tag, i) => (
+                  {folder.tags.map((tag, i) => (
                     <Badge key={i} variant="outline" className="text-xs">
                       {tag}
                     </Badge>
@@ -400,18 +262,12 @@ export default function CollectionsPage() {
             </div>
             
             <DropdownMenu>
-              <DropdownMenuTrigger asChild onClick={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-              }}>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
                 <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100 transition-opacity">
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" onClick={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-              }}>
+              <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                 <DropdownMenuItem>
                   <Eye className="h-4 w-4 mr-2" />
                   Quick View
@@ -438,14 +294,25 @@ export default function CollectionsPage() {
             <div>
               <p className="text-sm text-muted-foreground">Total Value</p>
               <div className="flex items-baseline gap-2 mt-1">
-                <p className="text-3xl font-bold">{formatCurrency((summary?.estimatedValue ?? folder.estimatedValue ?? 0))}</p>
+                <p className="text-3xl font-bold">{formatCurrency(folder.estimatedValue)}</p>
+                <div className={cn(
+                  "flex items-center gap-1 text-sm font-medium",
+                  folder.valueChange >= 0 ? "text-green-500" : "text-red-500"
+                )}>
+                  {folder.valueChange >= 0 ? (
+                    <TrendingUp className="h-4 w-4" />
+                  ) : (
+                    <TrendingDown className="h-4 w-4" />
+                  )}
+                  <span>{folder.valueChange >= 0 ? "+" : ""}{folder.valueChange.toFixed(1)}%</span>
+                </div>
               </div>
             </div>
 
             {/* Collection Grade */}
             <div className="flex items-center justify-between p-3 rounded-lg bg-gradient-to-r from-muted/50 to-muted/30">
               <div className="flex items-center gap-2">
-                <GradeIcon className="h-5 w-5" />
+                <GradeIcon className={cn("h-5 w-5 bg-gradient-to-br", grade.color, "text-transparent bg-clip-text")} />
                 <span className="text-sm font-medium">Collection Grade</span>
               </div>
               <Badge className={cn("bg-gradient-to-r", grade.color, "text-white border-0")}>
@@ -458,13 +325,13 @@ export default function CollectionsPage() {
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">Avg Value</span>
                 <span className="font-medium">
-                  {formatCurrency(((summary?.estimatedValue ?? folder.estimatedValue ?? 0) / Math.max(folder.itemCount || 1, 1)))}
+                  {formatCurrency(folder.estimatedValue / Math.max(folder.itemCount, 1))}
                 </span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">Updated</span>
                 <span className="font-medium">
-                  {new Date(folder.lastUpdated || '').toLocaleDateString()}
+                  {new Date(folder.lastUpdated).toLocaleDateString()}
                 </span>
               </div>
             </div>
@@ -481,42 +348,39 @@ export default function CollectionsPage() {
 
           {/* Hover Action */}
           <div className="absolute inset-x-0 bottom-0 h-1 bg-gradient-to-r from-primary to-primary/60 transform scale-x-0 group-hover:scale-x-100 transition-transform" />
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     )
   }
 
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/10">
-        {!DEMO_MODE && (
-          <SignedOut>
-            <div className="flex items-center justify-center min-h-screen p-4">
-              <Card className="max-w-lg w-full bg-gradient-to-br from-background to-muted/20 border-muted-foreground/10">
-                <CardContent className="p-8 text-center">
-                  <div className="mb-6">
-                    <div className="inline-flex p-4 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 mb-4">
-                      <Package className="h-12 w-12 text-primary" />
-                    </div>
-                    <h1 className="text-3xl font-bold mb-2">Premium Collection Tracker</h1>
-                    <p className="text-muted-foreground">
-                      The most advanced TCG collection management platform
-                    </p>
+        <SignedOut>
+          <div className="flex items-center justify-center min-h-screen p-4">
+            <Card className="max-w-lg w-full bg-gradient-to-br from-background to-muted/20 border-muted-foreground/10">
+              <CardContent className="p-8 text-center">
+                <div className="mb-6">
+                  <div className="inline-flex p-4 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 mb-4">
+                    <Package className="h-12 w-12 text-primary" />
                   </div>
-                  <SignInButton mode="modal">
-                    <Button size="lg" className="w-full bg-gradient-to-r from-primary to-primary/80">
-                      <Sparkles className="h-4 w-4 mr-2" />
-                      Get Started
-                    </Button>
-                  </SignInButton>
-                </CardContent>
-              </Card>
-            </div>
-          </SignedOut>
-        )}
+                  <h1 className="text-3xl font-bold mb-2">Premium Collection Tracker</h1>
+                  <p className="text-muted-foreground">
+                    The most advanced TCG collection management platform
+                  </p>
+                </div>
+                <SignInButton mode="modal">
+                  <Button size="lg" className="w-full bg-gradient-to-r from-primary to-primary/80">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Get Started
+                  </Button>
+                </SignInButton>
+              </CardContent>
+            </Card>
+          </div>
+        </SignedOut>
 
-        {DEMO_MODE ? (
-          <>
+        <SignedIn>
           {/* Premium Header */}
           <div className="sticky top-0 z-50 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
             <div className="px-4 lg:px-6 py-6">
@@ -761,91 +625,7 @@ export default function CollectionsPage() {
               </div>
             )}
           </div>
-          </>
-        ) : (
-          <SignedIn>
-            {/* Premium Header */}
-            <div className="sticky top-0 z-50 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
-              <div className="px-4 lg:px-6 py-6">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h1 className="text-4xl font-bold bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
-                      My Collections
-                    </h1>
-                    <p className="text-muted-foreground mt-1">
-                      Manage your premium TCG portfolio
-                    </p>
-                  </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <Button variant="outline" size="sm">
-                      <Upload className="h-4 w-4 mr-2" />
-                      Import
-                    </Button>
-                    <Button variant="outline" size="sm">
-                      <Download className="h-4 w-4 mr-2" />
-                      Export
-                    </Button>
-                    <Button 
-                      onClick={() => setCreateDialogOpen(true)}
-                      className="bg-gradient-to-r from-primary to-primary/80"
-                    >
-                      <FolderPlus className="h-4 w-4 mr-2" />
-                      New Folder
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Folders Grid */}
-            <div className="px-4 lg:px-6 py-6">
-              {filteredFolders.length === 0 ? (
-                <Card className="border-dashed bg-gradient-to-br from-background to-muted/10">
-                  <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                    <div className="rounded-full bg-gradient-to-br from-primary/20 to-primary/10 p-4 mb-4">
-                      <Package className="h-12 w-12 text-primary" />
-                    </div>
-                    <h3 className="text-lg font-semibold mb-2">
-                      {searchQuery ? "No folders found" : "Start your collection"}
-                    </h3>
-                    <p className="text-muted-foreground mb-6 max-w-sm">
-                      {searchQuery 
-                        ? `No folders match "${searchQuery}"`
-                        : "Create your first folder to start organizing your TCG collection"
-                      }
-                    </p>
-                    {!searchQuery && (
-                      <Button onClick={() => setCreateDialogOpen(true)}>
-                        <FolderPlus className="h-4 w-4 mr-2" />
-                        Create First Folder
-                      </Button>
-                    )}
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className={cn(
-                  "grid gap-6",
-                  viewMode === "grid" && "grid-cols-1 md:grid-cols-2 lg:grid-cols-3",
-                  viewMode === "list" && "grid-cols-1",
-                  viewMode === "gallery" && "grid-cols-1 lg:grid-cols-2",
-                  viewMode === "compact" && "grid-cols-1 md:grid-cols-3 lg:grid-cols-4"
-                )}>
-                  {filteredFolders.map((folder) => (
-                    <PremiumFolderCard key={folder._id} folder={folder} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </SignedIn>
-        )}
-
-        {/* Create Folder Dialog */}
-        <CreateFolderDialog
-          open={createDialogOpen}
-          onOpenChange={setCreateDialogOpen}
-          onSubmit={handleCreateFolder}
-        />
+        </SignedIn>
       </div>
     </TooltipProvider>
   )

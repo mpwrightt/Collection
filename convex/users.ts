@@ -53,6 +53,12 @@ export async function getCurrentUserOrThrow(ctx: QueryCtx) {
 export async function getCurrentUser(ctx: QueryCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (identity === null) {
+    // Dev fallback: use demo-local user if present
+    const isDev = (process as any)?.env?.NODE_ENV !== 'production'
+    if (isDev) {
+      const demo = await userByExternalId(ctx, 'demo-local')
+      return demo
+    }
     return null;
   }
   return await userByExternalId(ctx, identity.subject);
@@ -69,7 +75,20 @@ async function userByExternalId(ctx: QueryCtx, externalId: string) {
 export async function getOrCreateCurrentUser(ctx: MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (identity === null) {
-    throw new Error("Can't get current user");
+    // Dev fallback: create or get a demo-local user
+    const isDev = (process as any)?.env?.NODE_ENV !== 'production'
+    if (!isDev) throw new Error("Can't get current user");
+    let existing = await ctx.db
+      .query("users")
+      .withIndex("byExternalId", (q) => q.eq("externalId", 'demo-local'))
+      .unique();
+    if (existing) return existing as any;
+    const id = await ctx.db.insert("users", {
+      name: 'Demo User',
+      externalId: 'demo-local',
+    });
+    const created = await ctx.db.get(id);
+    return created as any;
   }
   // Try to find existing user
   let existing = await ctx.db
