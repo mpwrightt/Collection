@@ -74,13 +74,13 @@ export const getSkus = action({
   args: { productIds: v.array(v.number()) },
   handler: async (ctx, { productIds }) => {
     'use node';
-    if (productIds.length === 0) return { Success: true, Results: [] };
+    if (productIds.length === 0) return { Success: true, Results: [], results: [] };
     const svc = getPythonServiceUrl();
     const cleanIds = Array.from(new Set(productIds
       .map((x) => Number(x))
       .filter((n) => Number.isFinite(n) && n > 0)
     ));
-    if (cleanIds.length === 0) return { Success: true, Results: [] };
+    if (cleanIds.length === 0) return { Success: true, Results: [], results: [] };
     // Chunk requests so TCGplayer doesn't reject long paths
     const CHUNK = 50;
     const collectSkus = async (fetchChunk: (chunk: number[]) => Promise<any>) => {
