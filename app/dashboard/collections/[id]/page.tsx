@@ -273,7 +273,8 @@ export default function CollectionDetailPage() {
       ])
       setSelectedDetails(details)
       setSelectedMedia(media)
-      const skuList = skusResp?.results || skusResp?.Results || skusResp?.data || []
+      const skusAny: any = skusResp
+      const skuList = (skusAny?.results || skusAny?.Results || skusAny?.data || []) as any[]
       setSkus(skuList)
       setSelectedSkuId(undefined)
       setCardOpen(true)
