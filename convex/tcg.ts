@@ -76,19 +76,40 @@ export const getSkus = action({
     'use node';
     if (productIds.length === 0) return { Success: true, Results: [] };
     const svc = getPythonServiceUrl();
-    const ids = productIds.join(',');
+    const cleanIds = Array.from(new Set(productIds
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n) && n > 0)
+    ));
+    if (cleanIds.length === 0) return { Success: true, Results: [] };
+    // Chunk requests so TCGplayer doesn't reject long paths
+    const CHUNK = 50;
+    const collectSkus = async (fetchChunk: (chunk: number[]) => Promise<any>) => {
+      const all: any[] = [];
+      for (let i = 0; i < cleanIds.length; i += CHUNK) {
+        const chunk = cleanIds.slice(i, i + CHUNK);
+        const page = await fetchChunk(chunk);
+        const list = page?.results || page?.Results || page?.data || [];
+        all.push(...list);
+        if (cleanIds.length > CHUNK) await new Promise((r) => setTimeout(r, 50));
+      }
+      return { Success: true, Results: all, results: all };
+    };
     if (svc) {
-      const url = `${svc}/skus?productIds=${encodeURIComponent(ids)}`;
-      return await fetchJson(url, { method: 'GET' });
+      return await collectSkus(async (chunk) => {
+        const url = `${svc}/skus?productIds=${encodeURIComponent(chunk.join(','))}`;
+        return await fetchJson(url, { method: 'GET' });
+      });
     }
     const clientId = process.env.TCGPLAYER_CLIENT_ID!;
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
-    const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
-    const url = apiBase(version, `catalog/products/${ids}/skus`);
-    return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+    return await collectSkus(async (chunk) => {
+      await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+      const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
+      const url = apiBase(version, `catalog/products/${chunk.join(',')}/skus`);
+      return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+    });
   }
 });
 // List groups (sets) for a category, optional name filter
