@@ -224,11 +224,35 @@ export const collectionSummary = query({
         .unique();
       let market = 0;
       if (price?.data) {
+        // Handle direct pricing data
         if (typeof (price as any).data?.marketPrice === 'number') {
           market = (price as any).data.marketPrice;
-        } else if (Array.isArray((price as any).data?.results) && (price as any).data.results[0]?.marketPrice) {
+        }
+        // Handle array of pricing results with subTypeName for conditions
+        else if (Array.isArray((price as any).data?.results)) {
+          // Find Normal condition price first, fallback to any available price
+          const results = (price as any).data.results;
+          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
+          const anyPrice = results.find((r: any) => r.marketPrice);
+          const priceRecord = normalPrice || anyPrice;
+          if (priceRecord?.marketPrice) {
+            market = Number(priceRecord.marketPrice) || 0;
+          }
+        }
+        else if (Array.isArray((price as any).data?.Results)) {
+          // Handle capitalized Results array
+          const results = (price as any).data.Results;
+          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
+          const anyPrice = results.find((r: any) => r.marketPrice);
+          const priceRecord = normalPrice || anyPrice;
+          if (priceRecord?.marketPrice) {
+            market = Number(priceRecord.marketPrice) || 0;
+          }
+        }
+        // Handle legacy single result structure
+        else if ((price as any).data?.results?.[0]?.marketPrice) {
           market = Number((price as any).data.results[0].marketPrice) || 0;
-        } else if (Array.isArray((price as any).data?.Results) && (price as any).data.Results[0]?.marketPrice) {
+        } else if ((price as any).data?.Results?.[0]?.marketPrice) {
           market = Number((price as any).data.Results[0].marketPrice) || 0;
         }
       }
@@ -267,14 +291,38 @@ export const getCollectionStats = query({
         .query("pricingCache")
         .withIndex("byProductId", (q) => q.eq("productId", item.productId))
         .unique();
-      
+
       let market = 0;
       if (price?.data) {
+        // Handle direct pricing data
         if (typeof (price as any).data?.marketPrice === 'number') {
           market = (price as any).data.marketPrice;
-        } else if (Array.isArray((price as any).data?.results) && (price as any).data.results[0]?.marketPrice) {
+        }
+        // Handle array of pricing results with subTypeName for conditions
+        else if (Array.isArray((price as any).data?.results)) {
+          // Find Normal condition price first, fallback to any available price
+          const results = (price as any).data.results;
+          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
+          const anyPrice = results.find((r: any) => r.marketPrice);
+          const priceRecord = normalPrice || anyPrice;
+          if (priceRecord?.marketPrice) {
+            market = Number(priceRecord.marketPrice) || 0;
+          }
+        }
+        else if (Array.isArray((price as any).data?.Results)) {
+          // Handle capitalized Results array
+          const results = (price as any).data.Results;
+          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
+          const anyPrice = results.find((r: any) => r.marketPrice);
+          const priceRecord = normalPrice || anyPrice;
+          if (priceRecord?.marketPrice) {
+            market = Number(priceRecord.marketPrice) || 0;
+          }
+        }
+        // Handle legacy single result structure
+        else if ((price as any).data?.results?.[0]?.marketPrice) {
           market = Number((price as any).data.results[0].marketPrice) || 0;
-        } else if (Array.isArray((price as any).data?.Results) && (price as any).data.Results[0]?.marketPrice) {
+        } else if ((price as any).data?.Results?.[0]?.marketPrice) {
           market = Number((price as any).data.Results[0].marketPrice) || 0;
         }
       }

@@ -82,14 +82,14 @@ export const getSkus = action({
     ));
     if (cleanIds.length === 0) return emptySkuResponse();
     const normalizeList = (resp: any): any[] => resp?.results || resp?.Results || resp?.data || [];
-    const CHUNK = 40;
+    const CHUNK = 10; // Smaller chunks for SKU requests
     const collectSkus = async (loadChunk: (chunk: number[]) => Promise<any[]>) => {
       const all: any[] = [];
       for (let i = 0; i < cleanIds.length; i += CHUNK) {
         const chunk = cleanIds.slice(i, i + CHUNK);
         const list = await loadChunk(chunk);
         all.push(...list);
-        if (cleanIds.length > CHUNK) await new Promise((r) => setTimeout(r, 50));
+        if (cleanIds.length > CHUNK) await new Promise((r) => setTimeout(r, 100));
       }
       return {
         Success: true,
@@ -113,21 +113,26 @@ export const getSkus = action({
       const attempt = async (subset: number[]): Promise<any[]> => {
         await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
         const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
-        const url = apiBase(version, `catalog/products/${subset.join(',')}/skus`);
-        try {
-          const payload = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
-          return normalizeList(payload);
-        } catch (err: any) {
-          if (!isBadRequest(err)) throw augmentSkuError(err, subset);
-          if (subset.length === 1) {
-            console.warn(`Skipping invalid productId=${subset[0]} for SKU lookup`);
-            return [];
+        // Use individual product endpoints instead of batch
+        const allSkus: any[] = [];
+        for (const productId of subset) {
+          try {
+            const url = apiBase(version, `catalog/products/${productId}/skus`);
+            const payload = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+            const skus = normalizeList(payload);
+            allSkus.push(...skus);
+            // Small delay between requests
+            await new Promise((r) => setTimeout(r, 50));
+          } catch (err: any) {
+            if (!isBadRequest(err)) {
+              console.warn(`Failed to get SKUs for productId=${productId}:`, err.message);
+            } else {
+              console.warn(`Invalid productId=${productId} for SKU lookup`);
+            }
+            // Continue with other products instead of failing completely
           }
-          const mid = Math.ceil(subset.length / 2);
-          const first = await attempt(subset.slice(0, mid));
-          const second = await attempt(subset.slice(mid));
-          return [...first, ...second];
         }
+        return allSkus;
       };
       return await attempt(ids);
     };

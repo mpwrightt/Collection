@@ -35,7 +35,9 @@ import {
   Eye,
   Edit3,
   Copy,
-  Trash2
+  Trash2,
+  Zap,
+  ExternalLink
 } from "lucide-react"
 import {
   Select,
@@ -126,6 +128,7 @@ export default function CleanFolderDetailPage() {
   const [addOpen, setAddOpen] = React.useState(false)
   const [selectedCardForDetails, setSelectedCardForDetails] = React.useState<any>(null)
   const [detailsModalOpen, setDetailsModalOpen] = React.useState(false)
+  const [isRefreshingPrices, setIsRefreshingPrices] = React.useState(false)
 
   // Convex queries/actions for real data
   const collectionId = params.id as any
@@ -151,8 +154,72 @@ export default function CleanFolderDetailPage() {
   const [itemNames, setItemNames] = React.useState<Record<string, string>>({})
   const [itemThumbs, setItemThumbs] = React.useState<Record<string, string>>({})
   const [itemPrices, setItemPrices] = React.useState<Record<string, number>>({})
+  const [itemUrls, setItemUrls] = React.useState<Record<string, string>>({})
+  const [lastPriceRefresh, setLastPriceRefresh] = React.useState<Date>(new Date())
 
   // We fetch fresh prices every time to ensure real-time accuracy
+
+  // Force refresh prices function
+  const refreshPrices = React.useCallback(async () => {
+    const pids = Array.from(new Set(items.map((it: any) => Number(it.productId)).filter(Boolean)))
+    if (pids.length === 0) return
+
+    setIsRefreshingPrices(true)
+    try {
+      console.log("Refreshing prices for", pids.length, "products...")
+      const prices = await getProductPrices({ productIds: pids })
+      const plist: any[] = (prices as any)?.results || (prices as any)?.Results || (prices as any)?.data || []
+
+      console.log("Received", plist.length, "price records")
+
+      const priceMap: Record<string, number> = {}
+      for (const rec of plist) {
+        const pid = String(rec.productId ?? rec.ProductId)
+        if (!pid) continue
+
+        // TCGPlayer API pricing structure now includes subTypeName for condition
+        let market = 0
+        const subType = rec.subTypeName || 'Normal'
+
+        // Only use Normal (non-foil) pricing for now, or use any available price
+        if (subType === 'Normal' || !priceMap[pid]) {
+          if (typeof rec.marketPrice === 'number') {
+            market = rec.marketPrice
+          } else if (typeof rec.midPrice === 'number') {
+            market = rec.midPrice
+          } else if (typeof rec.lowPrice === 'number') {
+            market = rec.lowPrice
+          }
+
+          if (market > 0 && (subType === 'Normal' || !priceMap[pid])) {
+            priceMap[pid] = market
+          }
+        }
+      }
+
+      setItemPrices(priceMap)
+      setLastPriceRefresh(new Date())
+
+      // Persist fetched prices to cache
+      try {
+        const entries = plist.map((entry: any) => ({
+          productId: Number(entry.productId || entry.ProductId),
+          categoryId: 0,
+          currency: 'USD',
+          data: entry,
+        }))
+        if (entries.length > 0) {
+          await upsertPrices({ entries })
+        }
+      } catch {}
+
+      console.log("Price refresh complete. Updated", Object.keys(priceMap).length, "products")
+    } catch (e) {
+      console.error("Failed to refresh prices:", e)
+    } finally {
+      setIsRefreshingPrices(false)
+    }
+  }, [items, getProductPrices, upsertPrices])
 
   // Fetch product details and prices for items
   React.useEffect(() => {
@@ -160,65 +227,36 @@ export default function CleanFolderDetailPage() {
     if (pids.length === 0) { setItemNames({}); setItemThumbs({}); setItemPrices({}); return }
     (async () => {
       try {
-        const [details, prices] = await Promise.all([
-          getProductDetails({ productIds: pids }),
-          getProductPrices({ productIds: pids })
-        ])
+        // Always fetch fresh product details
+        const details = await getProductDetails({ productIds: pids })
         const dlist: any[] = (details as any)?.results || (details as any)?.Results || (details as any)?.data || []
-        const plist: any[] = (prices as any)?.results || (prices as any)?.Results || (prices as any)?.data || []
+
         const nameMap: Record<string, string> = {}
+        const urlMap: Record<string, string> = {}
         for (const d of dlist) {
           const pid = String(d.productId ?? d.ProductId ?? d.product?.productId)
-          if (pid) nameMap[pid] = d.name ?? d.ProductName ?? d.product?.name ?? `#${pid}`
-        }
-        const priceMap: Record<string, number> = {}
-        for (const rec of plist) {
-          const pid = String(rec.productId ?? rec.ProductId)
-          if (!pid) continue
-          
-          // TCGPlayer API pricing structure:
-          // { productId, lowPrice, midPrice, highPrice, marketPrice, directLowPrice }
-          let market = 0
-          if (typeof rec.marketPrice === 'number') {
-            market = rec.marketPrice
-          } else if (typeof rec.midPrice === 'number') {
-            // midPrice is often the market price
-            market = rec.midPrice
-          } else if (typeof rec.lowPrice === 'number') {
-            // fallback to lowPrice
-            market = rec.lowPrice
-          } else if (rec?.results?.[0]?.marketPrice) {
-            // nested results structure
-            market = Number(rec.results[0].marketPrice) || 0
+          if (pid) {
+            nameMap[pid] = d.name ?? d.ProductName ?? d.product?.name ?? `#${pid}`
+            urlMap[pid] = d.url ?? `https://www.tcgplayer.com/product/${pid}`
           }
-          priceMap[pid] = market
         }
+
         const thumbMap: Record<string, string> = {}
         for (const pid of pids) {
           thumbMap[String(pid)] = `https://product-images.tcgplayer.com/${pid}.jpg`
         }
-        setItemNames(nameMap)
-        // Always use fresh prices, not cached
-        setItemPrices(priceMap)
-        setItemThumbs(thumbMap)
 
-        // Persist fetched prices to cache for future loads
-        try {
-          const entries = plist.map((entry: any) => ({
-            productId: Number(entry.productId || entry.ProductId),
-            categoryId: 0,
-            currency: 'USD',
-            data: entry,
-          }))
-          if (entries.length > 0) {
-            await upsertPrices({ entries })
-          }
-        } catch {}
+        setItemNames(nameMap)
+        setItemThumbs(thumbMap)
+        setItemUrls(urlMap)
+
+        // Refresh prices automatically
+        await refreshPrices()
       } catch (e) {
-        // Non-fatal; UI will show fallbacks
+        console.error("Failed to fetch product details:", e)
       }
     })()
-  }, [items])
+  }, [items, refreshPrices])
 
   // Build render cards from real items
   const renderCards = React.useMemo(() => {
@@ -566,7 +604,27 @@ export default function CleanFolderDetailPage() {
                   <CheckSquare className="h-4 w-4 mr-2" />
                   {bulkMode ? "Exit Selection" : "Select Cards"}
                 </Button>
-                
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={refreshPrices}
+                  disabled={isRefreshingPrices}
+                  className="bg-gradient-to-r from-green-500/10 to-green-600/10 border-green-500/20"
+                >
+                  {isRefreshingPrices ? (
+                    <>
+                      <div className="animate-spin h-4 w-4 mr-2 border-2 border-green-500 border-t-transparent rounded-full" />
+                      Refreshing...
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="h-4 w-4 mr-2" />
+                      Refresh Prices
+                    </>
+                  )}
+                </Button>
+
                 <Button className="bg-gradient-to-r from-primary to-primary/80" onClick={() => setAddOpen(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   Add Cards
@@ -649,7 +707,9 @@ export default function CleanFolderDetailPage() {
                     <div>
                       <p className="text-sm text-muted-foreground">Total Value</p>
                       <p className="text-2xl font-bold">${summary.estimatedValue.toLocaleString()}</p>
-                      <p className="text-xs text-green-500">Tracked market</p>
+                      <p className="text-xs text-green-500">
+                        Last updated: {lastPriceRefresh.toLocaleTimeString()}
+                      </p>
                     </div>
                     <DollarSign className="h-8 w-8 text-green-500" />
                   </div>
