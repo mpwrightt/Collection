@@ -4,7 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "env": {
-    "NEXT_PUBLIC_CONVEX_URL": "@convex-url",
+    "NEXT_PUBLIC_CONVEX_URL": "https://energetic-mosquito-518.convex.cloud",
     "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY": "@clerk-publishable-key",
     "CLERK_SECRET_KEY": "@clerk-secret-key",
     "NEXT_PUBLIC_CLERK_FRONTEND_API_URL": "@clerk-frontend-api",
