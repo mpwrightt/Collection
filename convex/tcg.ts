@@ -74,42 +74,64 @@ export const getSkus = action({
   args: { productIds: v.array(v.number()) },
   handler: async (ctx, { productIds }) => {
     'use node';
-    if (productIds.length === 0) return { Success: true, Results: [], results: [], data: [] };
+    if (productIds.length === 0) return emptySkuResponse();
     const svc = getPythonServiceUrl();
     const cleanIds = Array.from(new Set(productIds
       .map((x) => Number(x))
-      .filter((n) => Number.isFinite(n) && n > 0)
+      .filter((n) => Number.isFinite(n) && n > 0 && Number.isInteger(n))
     ));
-    if (cleanIds.length === 0) return { Success: true, Results: [], results: [], data: [] };
-    // Chunk requests so TCGplayer doesn't reject long paths
-    const CHUNK = 50;
-    const collectSkus = async (fetchChunk: (chunk: number[]) => Promise<any>) => {
+    if (cleanIds.length === 0) return emptySkuResponse();
+    const normalizeList = (resp: any): any[] => resp?.results || resp?.Results || resp?.data || [];
+    const CHUNK = 40;
+    const collectSkus = async (loadChunk: (chunk: number[]) => Promise<any[]>) => {
       const all: any[] = [];
       for (let i = 0; i < cleanIds.length; i += CHUNK) {
         const chunk = cleanIds.slice(i, i + CHUNK);
-        const page = await fetchChunk(chunk);
-        const list = page?.results || page?.Results || page?.data || [];
+        const list = await loadChunk(chunk);
         all.push(...list);
         if (cleanIds.length > CHUNK) await new Promise((r) => setTimeout(r, 50));
       }
-      return { Success: true, Results: all, results: all, data: all };
+      return {
+        Success: true,
+        Results: all,
+        results: all,
+        data: all,
+      };
     };
     if (svc) {
       return await collectSkus(async (chunk) => {
         const url = `${svc}/skus?productIds=${encodeURIComponent(chunk.join(','))}`;
-        return await fetchJson(url, { method: 'GET' });
+        const payload = await fetchJson(url, { method: 'GET' });
+        return normalizeList(payload);
       });
     }
     const clientId = process.env.TCGPLAYER_CLIENT_ID!;
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    return await collectSkus(async (chunk) => {
-      await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
-      const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
-      const url = apiBase(version, `catalog/products/${chunk.join(',')}/skus`);
-      return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
-    });
+    const fetchSkuChunk = async (ids: number[]): Promise<any[]> => {
+      const attempt = async (subset: number[]): Promise<any[]> => {
+        await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+        const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
+        const url = apiBase(version, `catalog/products/${subset.join(',')}/skus`);
+        try {
+          const payload = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+          return normalizeList(payload);
+        } catch (err: any) {
+          if (!isBadRequest(err)) throw augmentSkuError(err, subset);
+          if (subset.length === 1) {
+            console.warn(`Skipping invalid productId=${subset[0]} for SKU lookup`);
+            return [];
+          }
+          const mid = Math.ceil(subset.length / 2);
+          const first = await attempt(subset.slice(0, mid));
+          const second = await attempt(subset.slice(mid));
+          return [...first, ...second];
+        }
+      };
+      return await attempt(ids);
+    };
+    return await collectSkus(fetchSkuChunk);
   }
 });
 // List groups (sets) for a category, optional name filter
@@ -307,6 +329,24 @@ function getPythonServiceUrl(): string | null {
   const url = (process as any).env?.TCGPY_SERVICE_URL || (globalThis as any).process?.env?.TCGPY_SERVICE_URL;
   if (typeof url === "string" && url.length > 0) return url.replace(/\/$/, "");
   return null;
+}
+
+function emptySkuResponse() {
+  return { Success: true, Results: [], results: [], data: [] };
+}
+
+function isBadRequest(err: any): boolean {
+  if (!(err instanceof Error)) return false;
+  return /\b400\b/.test(err.message);
+}
+
+function augmentSkuError(err: any, ids: number[]): Error {
+  if (err instanceof Error) {
+    const withContext = new Error(`${err.message} (productIds=${ids.join(',')})`);
+    (withContext as any).cause = err;
+    return withContext;
+  }
+  return new Error(`Failed to fetch SKUs for productIds=${ids.join(',')}: ${String(err)}`);
 }
 
 // Public action to get catalog categories
