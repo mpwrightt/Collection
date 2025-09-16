@@ -149,6 +149,38 @@ export default function CleanFolderDetailPage() {
   const [itemThumbs, setItemThumbs] = React.useState<Record<string, string>>({})
   const [itemPrices, setItemPrices] = React.useState<Record<string, number>>({})
 
+  // Try cached pricing first (fast path)
+  const productIds = React.useMemo(() => {
+    return Array.from(new Set(items.map((it: any) => Number(it.productId)).filter(Boolean)))
+  }, [items])
+  const cachedPriceRecords = useQuery(
+    api.pricing.getPricingForProducts,
+    productIds.length ? ({ productIds } as any) : "skip"
+  ) || []
+  const cachedPriceMap = React.useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const rec of cachedPriceRecords as any[]) {
+      let market = 0
+      const data = rec?.data
+      if (data) {
+        if (typeof data?.marketPrice === 'number') {
+          market = data.marketPrice
+        } else if (Array.isArray(data?.results) && data.results[0]?.marketPrice) {
+          market = Number(data.results[0].marketPrice) || 0
+        } else if (Array.isArray(data?.Results) && data.Results[0]?.marketPrice) {
+          market = Number(data.Results[0].marketPrice) || 0
+        }
+      }
+      out[String(rec.productId)] = market
+    }
+    return out
+  }, [cachedPriceRecords])
+  React.useEffect(() => {
+    if (Object.keys(cachedPriceMap).length > 0) {
+      setItemPrices(prev => ({ ...prev, ...cachedPriceMap }))
+    }
+  }, [cachedPriceMap])
+
   // Fetch product details and prices for items
   React.useEffect(() => {
     const pids = Array.from(new Set(items.map((it: any) => Number(it.productId)).filter(Boolean)))
@@ -182,6 +214,19 @@ export default function CleanFolderDetailPage() {
         setItemNames(nameMap)
         setItemPrices(priceMap)
         setItemThumbs(thumbMap)
+
+        // Persist fetched prices to cache for future loads
+        try {
+          const entries = plist.map((entry: any) => ({
+            productId: Number(entry.productId || entry.ProductId),
+            categoryId: 0,
+            currency: 'USD',
+            data: entry,
+          }))
+          if (entries.length > 0) {
+            await upsertPrices({ entries })
+          }
+        } catch {}
       } catch (e) {
         // Non-fatal; UI will show fallbacks
       }
@@ -372,7 +417,7 @@ export default function CleanFolderDetailPage() {
           </div>
         )}
         
-        <div className="relative aspect-[3/4] bg-gradient-to-br from-muted/50 to-muted/30">
+        <div className="relative aspect-[3/5] bg-gradient-to-br from-muted/50 to-muted/30">
           <img 
             src={card.imageUrl} 
             alt={card.name}
@@ -685,8 +730,8 @@ export default function CleanFolderDetailPage() {
             </Card>
           ) : (
             <div className={cn(
-              "grid gap-6",
-              viewMode === "grid" && "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+              "grid gap-4",
+              viewMode === "grid" && "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6",
               viewMode === "list" && "grid-cols-1",
               viewMode === "gallery" && "grid-cols-1 md:grid-cols-2",
               viewMode === "compact" && "grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
