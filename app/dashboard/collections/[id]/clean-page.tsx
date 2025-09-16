@@ -63,7 +63,8 @@ import { useAction, useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AddCardsDialog } from "@/components/collections/add-cards-dialog"
+import { AddCardsDialogV2 } from "@/components/collections/add-cards-dialog-v2"
+import { CardDetailsModal } from "@/components/collections/card-details-modal"
 
 // Card view model for rendering grid/list items
 type CardView = {
@@ -123,6 +124,8 @@ export default function CleanFolderDetailPage() {
   const [selectedCards, setSelectedCards] = React.useState<Set<string>>(new Set())
   const [bulkMode, setBulkMode] = React.useState(false)
   const [addOpen, setAddOpen] = React.useState(false)
+  const [selectedCardForDetails, setSelectedCardForDetails] = React.useState<any>(null)
+  const [detailsModalOpen, setDetailsModalOpen] = React.useState(false)
 
   // Convex queries/actions for real data
   const collectionId = params.id as any
@@ -149,37 +152,7 @@ export default function CleanFolderDetailPage() {
   const [itemThumbs, setItemThumbs] = React.useState<Record<string, string>>({})
   const [itemPrices, setItemPrices] = React.useState<Record<string, number>>({})
 
-  // Try cached pricing first (fast path)
-  const productIds = React.useMemo(() => {
-    return Array.from(new Set(items.map((it: any) => Number(it.productId)).filter(Boolean)))
-  }, [items])
-  const cachedPriceRecords = useQuery(
-    api.pricing.getPricingForProducts,
-    productIds.length ? ({ productIds } as any) : "skip"
-  ) || []
-  const cachedPriceMap = React.useMemo(() => {
-    const out: Record<string, number> = {}
-    for (const rec of cachedPriceRecords as any[]) {
-      let market = 0
-      const data = rec?.data
-      if (data) {
-        if (typeof data?.marketPrice === 'number') {
-          market = data.marketPrice
-        } else if (Array.isArray(data?.results) && data.results[0]?.marketPrice) {
-          market = Number(data.results[0].marketPrice) || 0
-        } else if (Array.isArray(data?.Results) && data.Results[0]?.marketPrice) {
-          market = Number(data.Results[0].marketPrice) || 0
-        }
-      }
-      out[String(rec.productId)] = market
-    }
-    return out
-  }, [cachedPriceRecords])
-  React.useEffect(() => {
-    if (Object.keys(cachedPriceMap).length > 0) {
-      setItemPrices(prev => ({ ...prev, ...cachedPriceMap }))
-    }
-  }, [cachedPriceMap])
+  // We fetch fresh prices every time to ensure real-time accuracy
 
   // Fetch product details and prices for items
   React.useEffect(() => {
@@ -202,9 +175,22 @@ export default function CleanFolderDetailPage() {
         for (const rec of plist) {
           const pid = String(rec.productId ?? rec.ProductId)
           if (!pid) continue
-          const market = typeof rec.marketPrice === 'number'
-            ? rec.marketPrice
-            : Number(rec?.results?.[0]?.marketPrice ?? rec?.Results?.[0]?.marketPrice ?? rec?.price?.market ?? 0) || 0
+          
+          // TCGPlayer API pricing structure:
+          // { productId, lowPrice, midPrice, highPrice, marketPrice, directLowPrice }
+          let market = 0
+          if (typeof rec.marketPrice === 'number') {
+            market = rec.marketPrice
+          } else if (typeof rec.midPrice === 'number') {
+            // midPrice is often the market price
+            market = rec.midPrice
+          } else if (typeof rec.lowPrice === 'number') {
+            // fallback to lowPrice
+            market = rec.lowPrice
+          } else if (rec?.results?.[0]?.marketPrice) {
+            // nested results structure
+            market = Number(rec.results[0].marketPrice) || 0
+          }
           priceMap[pid] = market
         }
         const thumbMap: Record<string, string> = {}
@@ -212,6 +198,7 @@ export default function CleanFolderDetailPage() {
           thumbMap[String(pid)] = `https://product-images.tcgplayer.com/${pid}.jpg`
         }
         setItemNames(nameMap)
+        // Always use fresh prices, not cached
         setItemPrices(priceMap)
         setItemThumbs(thumbMap)
 
@@ -325,13 +312,56 @@ export default function CleanFolderDetailPage() {
     }
   }
 
+  const handleCardClick = (card: CardView, e: React.MouseEvent) => {
+    // Don't open modal if clicking on action buttons
+    if ((e.target as HTMLElement).closest('button')) return
+    
+    const fullCard = items.find((item: any) => String(item._id) === card._id)
+    if (fullCard) {
+      setSelectedCardForDetails({
+        ...fullCard,
+        ...card,
+        imageUrl: card.imageUrl
+      })
+      setDetailsModalOpen(true)
+    }
+  }
+
+  const handleUpdateCard = async (updates: any) => {
+    if (!selectedCardForDetails) return
+    try {
+      await updateItemQuantity({ 
+        itemId: selectedCardForDetails._id as any, 
+        quantity: updates.quantity || selectedCardForDetails.quantity 
+      })
+      // Update local state
+      setSelectedCardForDetails({...selectedCardForDetails, ...updates})
+    } catch (error) {
+      console.error('Failed to update card:', error)
+    }
+  }
+
+  const handleDeleteCard = async () => {
+    if (!selectedCardForDetails) return
+    try {
+      await removeItem({ itemId: selectedCardForDetails._id as any })
+      setDetailsModalOpen(false)
+      setSelectedCardForDetails(null)
+    } catch (error) {
+      console.error('Failed to delete card:', error)
+    }
+  }
+
   const CardGridItem = ({ card }: { card: CardView }) => {
     const condition = CONDITIONS.find(c => c.value === card.condition)
     const rarity = RARITIES.find(r => r.value === card.rarity)
 
     if (viewMode === "list") {
       return (
-        <div className="group bg-gradient-to-r from-background/95 to-muted/20 backdrop-blur-sm rounded-lg border border-border/50 hover:border-primary/50 transition-all p-4">
+        <div 
+          className="group bg-gradient-to-r from-background/95 to-muted/20 backdrop-blur-sm rounded-lg border border-border/50 hover:border-primary/50 transition-all p-4 cursor-pointer"
+          onClick={(e) => handleCardClick(card, e)}
+        >
           <div className="flex items-center gap-4">
             {bulkMode && (
               <input
@@ -397,7 +427,10 @@ export default function CleanFolderDetailPage() {
     }
 
     return (
-      <Card className="group relative overflow-hidden hover:shadow-xl transition-all duration-300 bg-gradient-to-br from-background/95 to-muted/20 backdrop-blur-sm border-border/50 hover:border-primary/50">
+      <Card 
+        className="group relative overflow-hidden hover:shadow-xl transition-all duration-300 bg-gradient-to-br from-background/95 to-muted/20 backdrop-blur-sm border-border/50 hover:border-primary/50 cursor-pointer"
+        onClick={(e) => handleCardClick(card, e)}
+      >
         {bulkMode && (
           <div className="absolute top-2 left-2 z-10">
             <input
@@ -543,7 +576,7 @@ export default function CleanFolderDetailPage() {
                     Seed Test Items
                   </Button>
                 )}
-                <AddCardsDialog
+                <AddCardsDialogV2
                   open={addOpen}
                   onOpenChange={setAddOpen}
                   onAddCards={async (cards) => {
@@ -578,6 +611,18 @@ export default function CleanFolderDetailPage() {
                   getAllGroups={(categoryId: number) => getAllGroups({ categoryId })}
                   searchProducts={(params: any) => searchProducts(params)}
                   getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
+                  getSkus={(ids: number[]) => getSkus({ productIds: ids })}
+                />
+                
+                {/* Card Details Modal */}
+                <CardDetailsModal
+                  open={detailsModalOpen}
+                  onOpenChange={setDetailsModalOpen}
+                  card={selectedCardForDetails}
+                  onUpdateCard={handleUpdateCard}
+                  onDeleteCard={handleDeleteCard}
+                  getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
+                  getProductPrices={(ids: number[]) => getProductPrices({ productIds: ids })}
                   getSkus={(ids: number[]) => getSkus({ productIds: ids })}
                 />
               </div>
