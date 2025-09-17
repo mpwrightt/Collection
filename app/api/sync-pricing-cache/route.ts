@@ -7,7 +7,7 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 export async function POST() {
   try {
     // Get all setCards that have pricing data
-    const sets = await convex.query(api.sets.listSets);
+    const sets = await convex.query(api.sets.listSets, {});
     let totalSynced = 0;
 
     for (const set of sets) {
