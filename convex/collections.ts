@@ -693,3 +693,64 @@ export const getCollectionStats = query({
     };
   }
 });
+
+// Calculate collection grade based on card conditions and value
+export const calculateCollectionGrade = query({
+  args: { collectionId: v.id("collections") },
+  handler: async (ctx, { collectionId }) => {
+    const user = await getCurrentUser(ctx);
+    if (!user) return 'C';
+
+    const items = await ctx.db
+      .query("collectionItems")
+      .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+      .collect();
+
+    const userItems = items.filter((item: any) => String(item.userId) === String(user._id));
+
+    if (userItems.length === 0) return 'C';
+
+    // Calculate condition distribution
+    const conditionCounts = new Map<string, number>();
+    let totalQuantity = 0;
+    let totalValue = 0;
+
+    for (const item of userItems) {
+      const condition = item.condition || 'NM';
+      const quantity = item.quantity || 0;
+      const price = item.effectivePrice || 0;
+
+      conditionCounts.set(condition, (conditionCounts.get(condition) || 0) + quantity);
+      totalQuantity += quantity;
+      totalValue += price * quantity;
+    }
+
+    // Calculate condition percentages
+    const nmPercentage = ((conditionCounts.get('NM') || 0) / totalQuantity) * 100;
+    const lpPercentage = ((conditionCounts.get('LP') || 0) / totalQuantity) * 100;
+    const mpPercentage = ((conditionCounts.get('MP') || 0) / totalQuantity) * 100;
+    const hpPercentage = ((conditionCounts.get('HP') || 0) / totalQuantity) * 100;
+    const dmgPercentage = ((conditionCounts.get('DMG') || 0) / totalQuantity) * 100;
+
+    const averageValue = totalQuantity > 0 ? totalValue / totalQuantity : 0;
+
+    // Grade calculation logic
+    // S Grade: 80%+ NM, high average value (>$50), total value >$5000
+    if (nmPercentage >= 80 && averageValue >= 50 && totalValue >= 5000) {
+      return 'S';
+    }
+
+    // A Grade: 60%+ NM or 80%+ NM+LP, good average value (>$20), total value >$1000
+    if ((nmPercentage >= 60 || (nmPercentage + lpPercentage) >= 80) && averageValue >= 20 && totalValue >= 1000) {
+      return 'A';
+    }
+
+    // B Grade: 40%+ NM or 60%+ NM+LP, decent average value (>$5), total value >$500
+    if ((nmPercentage >= 40 || (nmPercentage + lpPercentage) >= 60) && averageValue >= 5 && totalValue >= 500) {
+      return 'B';
+    }
+
+    // C Grade: Everything else
+    return 'C';
+  },
+});

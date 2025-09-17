@@ -417,10 +417,10 @@ export default function CollectionsPage() {
 
   const PremiumFolderCard = ({ folder, summary }: { folder: CollectionFolder, summary?: CollectionSummary }) => {
     const estimatedValue = summary?.estimatedValue ?? folder.estimatedValue ?? 0
-    let grade: 'S' | 'A' | 'B' | 'C' = 'C'
-    if (estimatedValue > 10000) grade = 'S'
-    else if (estimatedValue > 5000) grade = 'A'
-    else if (estimatedValue > 1000) grade = 'B'
+
+    // Use the actual grade calculation based on card conditions
+    const calculatedGrade = useQuery(api.collections.calculateCollectionGrade, { collectionId: folder._id as any })
+    const grade: 'S' | 'A' | 'B' | 'C' = calculatedGrade || 'C'
 
     const gradeBadge = GRADE_BADGES[grade]
     const GradeIcon = gradeBadge.icon

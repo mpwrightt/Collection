@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useMutation, useQuery } from "convex/react"
+import { useAction, useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -32,9 +32,11 @@ export default function SavedDecksPage() {
   const router = useRouter()
   const decks = useQuery(api.decks.listDecks, {}) as any[] | undefined
   const deleteDeck = useMutation(api.decks.deleteDeck)
+  const refreshDeckPrices = useAction(api.decks.refreshDeckPrices)
 
   const [search, setSearch] = React.useState("")
   const [deletingId, setDeletingId] = React.useState<string | null>(null)
+  const [refreshingId, setRefreshingId] = React.useState<string | null>(null)
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -110,6 +112,27 @@ export default function SavedDecksPage() {
                             <Link href={`/dashboard/decks?deck=${String(deck._id)}`}>
                               <Button size="sm" variant="outline">Open</Button>
                             </Link>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={refreshingId === String(deck._id)}
+                              onClick={async () => {
+                                setRefreshingId(String(deck._id))
+                                try {
+                                  await refreshDeckPrices({ deckId: String(deck._id) } as any)
+                                } catch (e) {
+                                  console.error('Refresh deck prices failed', e)
+                                } finally {
+                                  setRefreshingId(null)
+                                }
+                              }}
+                            >
+                              {refreshingId === String(deck._id) ? (
+                                <span className="flex items-center gap-2"><Loader2 className="h-3 w-3 animate-spin" /> Refreshing</span>
+                              ) : (
+                                'Refresh Value'
+                              )}
+                            </Button>
                             <Button
                               size="sm"
                               variant="destructive"

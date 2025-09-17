@@ -231,7 +231,9 @@ function DecksPageImpl() {
   const buildDeck = useAction(api.ai.buildDeck)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const searchProducts = useAction(api.tcg.searchProducts)
+  const searchLegalProducts = useAction(api.formats.searchLegalProducts)
   const getProductPrices = useAction(api.tcg.getProductPrices)
+  const refreshDeckPrices = useAction(api.decks.refreshDeckPrices)
 
   const currentTcgOption = React.useMemo(
     () => TCG_OPTIONS.find((option) => option.value === selectedTcg),
@@ -513,12 +515,25 @@ function DecksPageImpl() {
       setSearching(true)
       setSearchError(null)
       try {
-        const payload = await searchProducts({
-          productName: query,
-          limit: 40,
-          offset: 0,
-          ...(currentTcgOption?.categoryId ? { categoryId: currentTcgOption.categoryId } : {}),
-        })
+        let payload: any
+        // Prefer format-legal results when a format is selected
+        if (currentDeck.format) {
+          payload = await searchLegalProducts({
+            tcg: selectedTcg,
+            formatCode: currentDeck.format,
+            productName: query,
+            limit: 40,
+            offset: 0,
+            ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
+          } as any)
+        } else {
+          payload = await searchProducts({
+            productName: query,
+            limit: 40,
+            offset: 0,
+            ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
+          })
+        }
         const list = extractList(payload)
         setSearchResults(list)
         if (Array.isArray(list)) {
@@ -548,7 +563,7 @@ function DecksPageImpl() {
         setSearching(false)
       }
     },
-    [searchQuery, searchProducts, currentTcgOption]
+    [searchQuery, searchProducts, searchLegalProducts, currentTcgOption, currentDeck.format, selectedTcg]
   )
 
   const handleAddFromHolding = React.useCallback(
@@ -762,12 +777,17 @@ function DecksPageImpl() {
         name: currentDeck.name || "Untitled Deck",
         tcg: selectedTcg,
         formatCode: currentDeck.format ?? undefined,
-        notes: undefined,
         cards: payloadCards,
       } as any)
       const savedId = String(id)
       setCurrentDeckId(savedId)
       router.replace(`/dashboard/decks?deck=${savedId}`)
+      try {
+        await refreshDeckPrices({ deckId: savedId } as any)
+        console.log("Deck prices refreshed")
+      } catch (e) {
+        console.warn("Deck price refresh failed (non-fatal)", e)
+      }
     } catch (error) {
       console.error("Save deck failed:", error)
     } finally {
@@ -961,15 +981,32 @@ function DecksPageImpl() {
 
       setAiPlan(typeof result?.plan === 'string' ? result.plan : null)
 
-      // Map AI card names to productIds via catalog search
+      // Map AI card names to productIds via catalog search (prefer format-legal)
       const suggested: Array<{ name: string; quantity: number; section: DeckSection }> = (result?.cards || [])
         .map((c: any) => ({ name: String(c.name), quantity: Number(c.quantity || 1), section: (c.section as DeckSection) || 'main' }))
 
       const additions: Array<{ productId: number; quantity: number; section: DeckSection }> = []
       for (const s of suggested) {
         try {
-          const payload = await searchProducts({ productName: s.name, limit: 1, offset: 0, ...(currentTcgOption?.categoryId ? { categoryId: currentTcgOption.categoryId } : {}) })
-          const list: any[] = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+          let payload: any
+          let list: any[] = []
+          if (currentDeck.format) {
+            // Try legal-first search
+            payload = await searchLegalProducts({
+              tcg: selectedTcg,
+              formatCode: currentDeck.format,
+              productName: s.name,
+              limit: 5,
+              offset: 0,
+              ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
+            } as any)
+            list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+          }
+          if (!Array.isArray(list) || list.length === 0) {
+            // Fallback to general search
+            payload = await searchProducts({ productName: s.name, limit: 5, offset: 0, ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}) })
+            list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+          }
           const top = list[0]
           const productId = Number(top?.productId ?? top?.ProductId)
           if (Number.isFinite(productId) && productId > 0) {

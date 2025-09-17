@@ -24,12 +24,14 @@ export default function DeckAiPage() {
   const holdingsData = useQuery(api.dashboard.getHoldings, { limit: 1000, offset: 0 }) || { rows: [], total: 0 }
 
   const analyzeDeck = useAction(api.ai.analyzeDeck)
+  const validateDeckLegality = useAction(api.formats.validateDeckLegality)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const getProductPrices = useAction(api.tcg.getProductPrices)
 
   const [busy, setBusy] = React.useState(false)
   const [result, setResult] = React.useState<any | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  const [legal, setLegal] = React.useState<{ issues: Array<{ productId: number; type: string; detail: string }> } | null>(null)
 
   const deckCards = React.useMemo<{
     productId: number
@@ -177,13 +179,23 @@ export default function DeckAiPage() {
         holdings,
       })
       setResult(out)
+
+      // Run format legality validation with server-side rules
+      try {
+        const legalOut = await validateDeckLegality({
+          tcg: deckData.deck.tcg,
+          formatCode: deckData.deck.formatCode ?? undefined,
+          cards: deckCards.map((c) => ({ productId: c.productId, quantity: c.quantity })),
+        } as any)
+        setLegal(legalOut)
+      } catch {}
     } catch (e: any) {
       setError(e?.message ?? "Analysis failed")
       setResult(null)
     } finally {
       setBusy(false)
     }
-  }, [deckData, deckCards, holdings, analyzeDeck])
+  }, [deckData, deckCards, holdings, analyzeDeck, validateDeckLegality])
 
   if (!deckData) {
     return (
@@ -264,6 +276,37 @@ export default function DeckAiPage() {
                   </ul>
                 </div>
                 ) : null
+              })()}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Format Legality</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                const list = Array.isArray(legal?.issues) ? legal!.issues : []
+                if (list.length === 0) {
+                  return <div className="text-sm text-muted-foreground">No legality violations found for the selected format.</div>
+                }
+                return (
+                  <div className="space-y-2">
+                    {list.map((iss, i) => {
+                      const key = String(iss.productId)
+                      const info = productInfo[key] || { name: `#${iss.productId}`, imageUrl: `https://product-images.tcgplayer.com/${iss.productId}.jpg`, url: `https://www.tcgplayer.com/product/${iss.productId}` }
+                      return (
+                        <div key={i} className="rounded-md border p-3 text-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium">{info.name}</span>
+                            <Badge variant="destructive">{iss.type}</Badge>
+                          </div>
+                          <div className="mt-1 text-muted-foreground">#{iss.productId} — {iss.detail}</div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
               })()}
             </CardContent>
           </Card>

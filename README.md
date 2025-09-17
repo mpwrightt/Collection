@@ -1,334 +1,88 @@
-# Starter.diy - Elite Next.js SaaS Starter Kit
+# TCG Collection Tracker
 
-A modern, production-ready SaaS starter template for building full-stack applications using Next.js 15, Convex, Clerk, and Clerk Billing. The easiest way to start accepting payments with beautiful UI and seamless integrations.
+Collection Tracker is a full-stack web application for managing trading card game (TCG) collections, tracking market value, building decks with legality checks, and bridging directly to TCGplayer for catalog and pricing data. The stack pairs a Next.js 15 App Router front end with Convex real-time functions, Clerk authentication, and an optional FastAPI microservice for high-throughput TCGplayer requests.
 
-[🌐 Live Demo](https://elite-next-clerk-convex-starter.vercel.app/) – Try the app in your browser!
+## Highlights
+- Manage collections with nested folders, targets, tags, and rich pricing metrics backed by Convex
+- Track market value using cached TCGplayer pricing data with scheduled refresh and on-demand sync
+- Build decks across MTG, Pokémon, and Yu-Gi-Oh! with section-aware editing, holdings comparison, and format metadata
+- Generate deck analysis and upgrade suggestions through the Gemini-powered AI assistant
+- "Buy missing" integrations that compute deltas versus collections and prepare CSV/quicklist exports for TCGplayer
+- `run_all.sh` orchestrates the Next.js dev server, Convex dev environment, and local Python microservice in one command
 
+## Architecture Overview
+- **Next.js App (`app/`, `components/`, `hooks/`, `lib/`)**: App Router UI, dashboard widgets, data hooks, and shared utilities. Tailwind v4 + shadcn/ui provide styling primitives.
+- **Convex backend (`convex/`)**: Serverless queries, mutations, actions, and HTTP routes for collections, decks, pricing cache, Clerk webhooks, and TCGplayer orchestration.
+- **TCGplayer Python service (`tcgplayer-python/`)**: FastAPI + SDK that mirrors catalog/media/pricing endpoints with rate limiting and caching. Used when `TCGPY_PUBLIC_URL` is available; otherwise Convex calls TCGplayer directly.
+- **Authentication & Billing**: Clerk handles auth, sessions, and optional billing; JWT template `convex` drives secure Convex access.
+- **Documentation (`docs/`)**: Living specs covering setup, schema, API usage, frontend flows, and operational runbooks.
 
-## Features
-
-- 🚀 **Next.js 15 with App Router** - Latest React framework with server components
-- ⚡️ **Turbopack** - Ultra-fast development with hot module replacement
-- 🎨 **TailwindCSS v4** - Modern utility-first CSS with custom design system
-- 🔐 **Clerk Authentication** - Complete user management with social logins
-- 💳 **Clerk Billing** - Integrated subscription management and payments
-- 🗄️ **Convex Real-time Database** - Serverless backend with real-time sync
-- 🛡️ **Protected Routes** - Authentication-based route protection
-- 💰 **Payment Gating** - Subscription-based content access
-- 🎭 **Beautiful 404 Page** - Custom animated error page
-- 🌗 **Dark/Light Theme** - System-aware theme switching
-- 📱 **Responsive Design** - Mobile-first approach with modern layouts
-- ✨ **Custom Animations** - React Bits and Framer Motion effects
-- 🧩 **shadcn/ui Components** - Modern component library with Radix UI
-- 📊 **Interactive Dashboard** - Complete admin interface with charts
-- �� **Webhook Integration** - Automated user and payment sync
-- 🚢 **Vercel Ready** - One-click deployment
-
-## Tech Stack
-
-### Frontend
-- **Next.js 15** - React framework with App Router
-- **TailwindCSS v4** - Utility-first CSS framework
-- **shadcn/ui** - Modern component library
-- **Radix UI** - Accessible component primitives
-- **Framer Motion** - Smooth animations and transitions
-- **Motion Primitives** - Advanced animation components
-- **Lucide React & Tabler Icons** - Beautiful icon libraries
-- **Recharts** - Data visualization components
-- **React Bits** - Custom animation components
-
-### Backend & Services
-- **Convex** - Real-time database and serverless functions
-- **Clerk** - Authentication and user management
-- **Clerk Billing** - Subscription billing and payments
-- **Svix** - Webhook handling and validation
-
-### Development & Deployment
-- **TypeScript** - Type safety throughout
-- **Vercel** - Deployment platform
-- **Turbopack** - Fast build tool
+## Project Layout
+- `app/` – App Router routes (`/` landing, `/dashboard` collections/decks analytics, API routes)
+- `components/` – Reusable UI primitives and feature components (collections dialogs, tables, charts)
+- `convex/` – Convex schema, queries, mutations, actions, and HTTP handlers for Clerk + TCGplayer
+- `tcgplayer-python/` – FastAPI microservice and reusable Python SDK for TCGplayer
+- `docs/` – Product requirements, setup, schema reference, integration guides, and change log
+- `lib/`, `hooks/` – Shared utilities, data adapters, and custom React hooks used across the app
+- `public/` – Static assets and icons
 
 ## Getting Started
+1. **Install prerequisites**: Node 18+, pnpm or npm, Convex CLI (`npm i -g convex`), Python 3.10+ for the service, and a Clerk + TCGplayer account.
+2. **Install dependencies**: `pnpm install` (or `npm install`).
+3. **Copy environment template**: `cp .env.example .env.local` and populate the values listed below.
+4. **Configure Convex server env** (runs in the cloud even during dev):
+   ```bash
+   npx convex env set TCGPLAYER_CLIENT_ID "..."
+   npx convex env set TCGPLAYER_CLIENT_SECRET "..."
+   npx convex env set TCGPLAYER_API_VERSION "v1.39.0"
+   # Optional: expose local Python service via tunnel and share the URL
+   npx convex env set TCGPY_SERVICE_URL "https://your-public-tunnel"  # or let run_all.sh manage it
+   ```
+5. **Run the stack**:
+   - Easiest: `npm run all` → executes `run_all.sh` to launch the Python service (port 8787), Convex dev, and Next.js dev.
+   - Manual: in separate terminals run `npx convex dev`, `npm run dev`, and (optional) `cd tcgplayer-python && uvicorn service.app:app --reload --port 8787`.
+6. Sign in with your Clerk account. The dashboard loads demo data if `NEXT_PUBLIC_CONVEX_URL` is unset, otherwise live collection data syncs via Convex.
 
-### Prerequisites
+### Environment Variables
+| Scope | Variable | Notes |
+| --- | --- | --- |
+| Next.js | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk publishable key |
+| Next.js | `CLERK_SECRET_KEY` | Server-side Clerk key (keep secret) |
+| Next.js | `NEXT_PUBLIC_CLERK_FRONTEND_API_URL` | Clerk domain from the `convex` JWT template |
+| Next.js | `NEXT_PUBLIC_CONVEX_URL` | Provided by `npx convex dev`; enables live data instead of demo mode |
+| Next.js | `NEXT_PUBLIC_CLERK_SIGN_*` | Dashboard redirect targets after auth |
+| Convex | `TCGPLAYER_CLIENT_ID`, `TCGPLAYER_CLIENT_SECRET`, `TCGPLAYER_API_VERSION` | TCGplayer API credentials & version |
+| Convex (optional) | `TCGPY_SERVICE_URL` | Publicly reachable FastAPI service URL; omit for direct TCGplayer access |
+| Convex (optional) | `CLERK_WEBHOOK_SECRET` | Set via Clerk dashboard if webhooks are enabled |
+| Convex (optional) | `GOOGLE_API_KEY`, `GEMINI_MODEL` | Enables Gemini-powered deck analysis |
 
-- Node.js 18+ 
-- Clerk account for authentication and billing
-- Convex account for database
-
-### Installation
-
-1. Download and set up the starter template:
-
-```bash
-# Download the template files to your project directory
-# Then navigate to your project directory and install dependencies
-npm install #or pnpm / yarn / bun
-```
-
-2. Set up your environment variables:
-
-```bash
-cp .env.example .env.local
-```
-
-3. Configure your environment variables in `.env.local`:
-
-3a. run `npx convex dev` or `bunx convex dev` to configure your convex database variables
-
-```bash
-# Clerk Authentication & Billing
-# Get these from your Clerk dashboard at https://dashboard.clerk.com
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_your_clerk_publishable_key_here
-CLERK_SECRET_KEY=sk_test_your_clerk_secret_key_here
-
-# Clerk Frontend API URL (from JWT template - see step 5)
-NEXT_PUBLIC_CLERK_FRONTEND_API_URL=https://your-clerk-frontend-api-url.clerk.accounts.dev
-
-# Clerk Redirect URLs
-NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL=/dashboard
-NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL=/dashboard
-NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL=/dashboard
-NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL=/dashboard
-```
-
-4. Initialize Convex:
-
-```bash
-npx convex dev
-```
-
-5. Set up Clerk JWT Template:
-   - Go to your Clerk dashboard
-   - Navigate to JWT Templates
-   - Create a new template with name "convex"
-   - Copy the Issuer URL - this becomes your `NEXT_PUBLIC_CLERK_FRONTEND_API_URL`
-   - Add this URL to both your `.env.local` and Convex environment variables
-
-6. Set up Convex environment variables in your Convex dashboard:
-
-```bash
-# In Convex Dashboard Environment Variables
-CLERK_WEBHOOK_SECRET=whsec_your_webhook_secret_here
-NEXT_PUBLIC_CLERK_FRONTEND_API_URL=https://your-clerk-frontend-api-url.clerk.accounts.dev
-```
-
-7. Set up Clerk webhooks (in Clerk Dashboard, not Convex):
-   - Go to your Clerk dashboard → Webhooks section
-   - Create a new endpoint with URL: `https://your-deployed-app.com/api/clerk-users-webhook`
-   - Enable these events:
-     - `user.created` - Syncs new users to Convex
-     - `user.updated` - Updates user data in Convex
-     - `user.deleted` - Removes users from Convex
-     - `paymentAttempt.updated` - Tracks subscription payments
-   - Copy the webhook signing secret (starts with `whsec_`)
-   - Add it to your Convex dashboard environment variables as `CLERK_WEBHOOK_SECRET`
-   
-   **Note**: The webhook URL `/clerk-users-webhook` is handled by Convex's HTTP router, not Next.js. Svix is used to verify webhook signatures for security.
-
-8. Configure Clerk Billing:
-   - Set up your pricing plans in Clerk dashboard
-   - Configure payment methods and billing settings
-
-### Development
-
-Start the development server:
-
-```bash
-npm run dev
-```
-
-Your application will be available at `http://localhost:3000`.
-
-## Architecture
-
-### Key Routes
-- `/` - Beautiful landing page with pricing
-- `/dashboard` - Protected user dashboard
-- `/dashboard/payment-gated` - Subscription-protected content
-- `/clerk-users-webhook` - Clerk webhook handler
-
-### Authentication Flow
-- Seamless sign-up/sign-in with Clerk
-- Automatic user sync to Convex database
-- Protected routes with middleware
-- Social login support
-- Automatic redirects to dashboard after auth
-
-### Payment Flow
-- Custom Clerk pricing table component
-- Subscription-based access control
-- Real-time payment status updates
-- Webhook-driven payment tracking
-
-### Database Schema
-```typescript
-// Users table
-users: {
-  name: string,
-  externalId: string // Clerk user ID
-}
-
-// Payment attempts tracking
-paymentAttempts: {
-  payment_id: string,
-  userId: Id<"users">,
-  payer: { user_id: string },
-  // ... additional payment data
-}
-```
-
-## Project Structure
-
-```
-├── app/
-│   ├── (landing)/          # Landing page components
-│   │   ├── hero-section.tsx
-│   │   ├── features-one.tsx
-│   │   ├── pricing.tsx
-│   │   └── ...
-│   ├── dashboard/          # Protected dashboard
-│   │   ├── layout.tsx
-│   │   ├── page.tsx
-│   │   └── payment-gated/
-│   ├── globals.css         # Global styles
-│   ├── layout.tsx          # Root layout
-│   └── not-found.tsx       # Custom 404 page
-├── components/
-│   ├── ui/                 # shadcn/ui components
-│   ├── custom-clerk-pricing.tsx
-│   ├── theme-provider.tsx
-│   └── ...
-├── convex/                 # Backend functions
-│   ├── schema.ts           # Database schema
-│   ├── users.ts            # User management
-│   ├── paymentAttempts.ts  # Payment tracking
-│   └── http.ts             # Webhook handlers
-├── lib/
-│   └── utils.ts            # Utility functions
-└── middleware.ts           # Route protection
-```
-
-## Key Components
-
-### Landing Page
-- **Hero Section** - Animated hero with CTAs
-- **Features Section** - Interactive feature showcase
-- **Pricing Table** - Custom Clerk billing integration
-- **Testimonials** - Social proof section
-- **FAQ Section** - Common questions
-- **Footer** - Links and information
-
-### Dashboard
-- **Sidebar Navigation** - Collapsible sidebar with user menu
-- **Interactive Charts** - Data visualization with Recharts
-- **Data Tables** - Sortable and filterable tables
-- **Payment Gating** - Subscription-based access control
-
-### Animations & Effects
-- **Splash Cursor** - Interactive cursor effects
-- **Animated Lists** - Smooth list animations
-- **Progressive Blur** - Modern blur effects
-- **Infinite Slider** - Continuous scrolling elements
-
-## Theme Customization
-
-The starter kit includes a fully customizable theme system. You can customize colors, typography, and components using:
-
-- **Theme Tools**: [tweakcn.com](https://tweakcn.com/editor/theme?tab=typography), [themux.vercel.app](https://themux.vercel.app/shadcn-themes), or [ui.jln.dev](https://ui.jln.dev/)
-- **Global CSS**: Modify `app/globals.css` for custom styling
-- **Component Themes**: Update individual component styles in `components/ui/`
-
-## Environment Variables
-
-### Required for .env.local
-
-- `CONVEX_DEPLOYMENT` - Your Convex deployment URL
-- `NEXT_PUBLIC_CONVEX_URL` - Your Convex client URL
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` - Clerk publishable key
-- `CLERK_SECRET_KEY` - Clerk secret key
-- `NEXT_PUBLIC_CLERK_FRONTEND_API_URL` - Clerk frontend API URL (from JWT template)
-- `NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL` - Redirect after sign in
-- `NEXT_PUBLIC_CLERK_SIGN_UP_FORCE_REDIRECT_URL` - Redirect after sign up
-- `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` - Fallback redirect for sign in
-- `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` - Fallback redirect for sign up
-
-### Required for Convex Dashboard
-
-- `CLERK_WEBHOOK_SECRET` - Clerk webhook secret (set in Convex dashboard)
-- `NEXT_PUBLIC_CLERK_FRONTEND_API_URL` - Clerk frontend API URL (set in Convex dashboard)
-
-## Deployment
-
-### Vercel Deployment (Recommended)
-
-1. Connect your repository to Vercel
-2. Set environment variables in Vercel dashboard
-3. Deploy automatically on push to main branch
-
-The project is optimized for Vercel with:
-- Automatic builds with Turbopack
-- Environment variable management
-- Edge function support
-
-### Manual Deployment
-
-Build for production:
-
-```bash
-npm run build
-npm start
-```
-
-## Customization
-
-### Styling
-- Modify `app/globals.css` for global styles
-- Update TailwindCSS configuration
-- Customize component themes in `components/ui/`
-
-### Branding
-- Update logo in `components/logo.tsx`
-- Modify metadata in `app/layout.tsx`
-- Customize color scheme in CSS variables
-
-### Features
-- Add new dashboard pages in `app/dashboard/`
-- Extend database schema in `convex/schema.ts`
-- Create custom components in `components/`
+## Key Workflows
+- **Collections**: `convex/collections.ts` powers CRUD, summaries, valuation, and completion tracking. UI lives in `app/dashboard/collections/` with dialogs for folder creation, targets, and sorting.
+- **Pricing**: `convex/pricing.ts` fetches prices via Convex actions, writes to `pricingCache`, and hydrates dashboard + deck estimates. Refresh buttons trigger background actions with rate limiting.
+- **Deck Builder**: `convex/decks.ts` + `app/dashboard/decks/` manage deck lists, sections, legality metadata, and holdings diffing. `convex/ai.ts` integrates Gemini for analysis and suggestions.
+- **TCGplayer service**: `tcgplayer-python/service/` exposes catalog, pricing, and media endpoints; `run_all.sh` installs dependencies and keeps it running locally.
+- **"Buy Missing" flow**: Deck and collection deltas produce CSV/quicklists for TCGplayer imports (see `convex/tcg.ts` and dashboard actions).
 
 ## Scripts
+- `npm run dev` – Next.js dev server (Turbopack)
+- `npx convex dev` – Convex backend (required for live data)
+- `npm run all` – Run Python service + Convex + Next.js via `run_all.sh`
+- `npm run build` / `npm run start` – Production build and start
+- `npm run lint` – ESLint + Tailwind rules
+- `cd tcgplayer-python && make test` – Python service/unit tests
+- `cd tcgplayer-python && make ci` – Full Python pipeline
 
-- `npm run dev` - Start development server with Turbopack
-- `npm run build` - Build for production
-- `npm start` - Start production server
-- `npm run lint` - Run ESLint
+## Testing & Quality
+- Frontend: run `npm run lint` before committing; add Vitest/Playwright tests alongside new UI where possible.
+- Backend/Convex: leverage `docs/CONVEX.md` for query/action contracts; add integration tests when touching pricing or deck flows.
+- Python service: keep coverage ≥80% with `make test`; fixtures live in `tcgplayer-python/tests/`.
 
-## Why Starter.diy?
-
-**THE EASIEST TO SET UP. EASIEST IN TERMS OF CODE.**
-
-- ✅ **Clerk + Convex + Clerk Billing** make it incredibly simple
-- ✅ **No complex payment integrations** - Clerk handles everything
-- ✅ **Real-time user sync** - Webhooks work out of the box
-- ✅ **Beautiful UI** - Tailark.com inspired landing page blocks
-- ✅ **Production ready** - Authentication, payments, and database included
-- ✅ **Type safe** - Full TypeScript support throughout
+## Documentation & Support
+- Start with `docs/SETUP.md` for step-by-step environment configuration.
+- `docs/FRONTEND.md`, `docs/CONVEX.md`, and `docs/TCGPLAYER.md` cover feature flows, data contracts, and API expectations.
+- `PRD.md` outlines the product vision, milestones, and non-goals.
+- Operational tips and troubleshooting live in `docs/RUNBOOK.md`.
 
 ## Contributing
+Follow Conventional Commits (e.g., `feat: add deck legality checks`), keep `npm run lint` and `make test` green, and update docs when data contracts change. For shared secrets, use `npx convex env set` instead of committing to `.env.local`.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License.
-
----
-
-**Stop rebuilding the same foundation over and over.** Starter.diy eliminates weeks of integration work by providing a complete, production-ready SaaS template with authentication, payments, and real-time data working seamlessly out of the box.
-
-Built with ❤️ using Next.js 15, Convex, Clerk, and modern web technologies.
