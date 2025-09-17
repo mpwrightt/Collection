@@ -343,7 +343,7 @@ export default function DecksPage() {
   }, [filteredHoldings, productInfo, holdingsSearch])
 
   const ensureProductInfo = React.useCallback(
-    async (productId: number) => {
+    async (productId: number): Promise<ProductInfo> => {
       const key = String(productId)
       const existing = productInfo[key]
       if (existing) return existing
@@ -358,7 +358,7 @@ export default function DecksPage() {
       } catch (error) {
         console.error(`Failed to fetch product ${productId}:`, error)
       }
-      const fallback = { name: `#${productId}`, imageUrl: fallbackImage(productId) }
+      const fallback: ProductInfo = { name: `#${productId}`, imageUrl: fallbackImage(productId), url: `https://www.tcgplayer.com/product/${productId}` }
       setProductInfo((prev) => ({ ...prev, [key]: prev[key] ?? fallback }))
       return fallback
     },
