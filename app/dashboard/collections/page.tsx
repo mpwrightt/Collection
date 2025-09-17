@@ -83,13 +83,32 @@ interface CollectionFolder {
   name: string
   itemCount: number
   estimatedValue?: number
+  averageValue?: number
+  totalQuantity?: number
+  distinctProducts?: number
+  completionPercentage?: number
+  missingCards?: number
+  lastUpdated?: string | number
+  summaryUpdatedAt?: number
   valueChange?: number
-  lastUpdated?: string
   icon?: string
   color?: string
   tags?: string[]
   featured?: boolean
   grade?: 'S' | 'A' | 'B' | 'C'
+}
+
+type CollectionSummary = {
+  collectionId: string
+  totalQuantity: number
+  distinctProducts: number
+  estimatedValue: number
+  averageValue: number
+  completionPercentage: number
+  missingCards: number
+  setName: string | null
+  latestItemUpdatedAt: number
+  updatedAt: number
 }
 
 const VIEW_MODES = [
@@ -179,17 +198,13 @@ export default function CollectionsPage() {
   
   // Convex queries and mutations
   const folders = useQuery(api.collections.listCollectionsWithCounts, { parentId: undefined }) || []
+  const summaries = useQuery(api.collections.listCollectionSummaries, {}) || []
   const createCollection = useMutation(api.collections.createCollection)
   const updateCollection = useMutation(api.collections.updateCollection)
   const deleteCollection = useMutation(api.collections.deleteCollection)
   const addPricingForUserCards = useMutation(api.debug.addPricingForUserCards)
 
   // Get collection stats
-  const collectionStats = useQuery(api.collections.getCollectionStats) || {
-    totalCards: 0,
-    totalValue: 0,
-    totalFolders: folders.length
-  }
   
   // UI State
   const [viewMode, setViewMode] = React.useState<'grid' | 'list' | 'gallery' | 'compact'>('grid')
@@ -198,6 +213,25 @@ export default function CollectionsPage() {
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false)
   const [busyId, setBusyId] = React.useState<string | null>(null)
   const [isLoading, setIsLoading] = React.useState(false)
+
+  const summariesMap = React.useMemo(() => {
+    const map = new Map<string, CollectionSummary>()
+    for (const summary of summaries as any[]) {
+      map.set(String(summary.collectionId), {
+        collectionId: String(summary.collectionId),
+        totalQuantity: summary.totalQuantity ?? 0,
+        distinctProducts: summary.distinctProducts ?? 0,
+        estimatedValue: summary.estimatedValue ?? 0,
+        averageValue: summary.averageValue ?? 0,
+        completionPercentage: summary.completionPercentage ?? 0,
+        missingCards: summary.missingCards ?? 0,
+        setName: summary.setName ?? null,
+        latestItemUpdatedAt: summary.latestItemUpdatedAt ?? 0,
+        updatedAt: summary.updatedAt ?? 0
+      })
+    }
+    return map
+  }, [summaries])
 
   // Process folders with enhanced data using real pricing data
   const enhancedFolders = React.useMemo(() => {
@@ -214,15 +248,22 @@ export default function CollectionsPage() {
     ]
 
     return base.map((folder: any) => {
+      const summary = summariesMap.get(String(folder._id))
       // Extract color from labels if available
       const colorLabel = folder.labels?.find((label: string) => label.startsWith('color:'))
       const extractedColor = colorLabel ? colorLabel.replace('color:', '') : null
 
       return {
         ...folder,
-        estimatedValue: 0, // Will be populated by individual queries
+        estimatedValue: summary?.estimatedValue ?? 0,
+        averageValue: summary?.averageValue ?? 0,
+        totalQuantity: summary?.totalQuantity ?? folder.itemCount ?? 0,
+        distinctProducts: summary?.distinctProducts ?? undefined,
+        completionPercentage: summary?.completionPercentage ?? 0,
+        missingCards: summary?.missingCards ?? undefined,
+        summaryUpdatedAt: summary?.updatedAt ?? undefined,
         valueChange: 0, // We don't track historical data yet
-        lastUpdated: folder.updatedAt || folder.createdAt || Date.now(),
+        lastUpdated: summary?.updatedAt || folder.updatedAt || folder.createdAt || Date.now(),
         icon: "folder",
         color: extractedColor || colorOptions[Math.abs(folder._id?.charCodeAt?.(0) || 0) % colorOptions.length],
         tags: (folder.labels || []).filter((label: string) => !label.startsWith('color:') && !label.startsWith('icon:')),
@@ -230,7 +271,7 @@ export default function CollectionsPage() {
         grade: 'C' as const // Will be calculated based on value
       }
     })
-  }, [folders])
+  }, [folders, summariesMap])
 
   // Filter and sort folders
   const filteredFolders = React.useMemo(() => {
@@ -329,17 +370,22 @@ export default function CollectionsPage() {
 
   // Calculate portfolio stats using real collection stats API
   const portfolioStats = React.useMemo(() => {
+    const summaries = Array.from(summariesMap.values())
+    const totalValue = summaries.reduce((sum, summary) => sum + (summary.estimatedValue ?? 0), 0)
+    const totalCards = summaries.reduce((sum, summary) => sum + (summary.totalQuantity ?? 0), 0)
+    const totalFolders = folders.length
+
     return {
-      totalValue: collectionStats.totalValue,
-      totalChange: 0, // We don't track historical data yet
-      changePercent: 0, // We don't track historical data yet
-      totalCards: collectionStats.totalCards,
-      totalFolders: collectionStats.totalFolders,
-      topGainer: null, // We don't track historical data yet
-      topLoser: null, // We don't track historical data yet
-      averageValue: collectionStats.totalFolders > 0 ? collectionStats.totalValue / collectionStats.totalFolders : 0
+      totalValue,
+      totalChange: 0,
+      changePercent: 0,
+      totalCards,
+      totalFolders,
+      topGainer: null,
+      topLoser: null,
+      averageValue: totalFolders > 0 ? totalValue / totalFolders : 0
     }
-  }, [collectionStats])
+  }, [summariesMap, folders])
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -350,14 +396,8 @@ export default function CollectionsPage() {
     }).format(value)
   }
 
-  const PremiumFolderCard = ({ folder }: { folder: CollectionFolder }) => {
-    const summary = useQuery(api.collections.collectionSummary, { collectionId: folder._id as any }) || null
-
-    // Debug logging
-    console.log(`Collection "${folder.name}" summary:`, summary)
-
-    // Calculate grade based on estimated value
-    const estimatedValue = summary?.estimatedValue ?? 0
+  const PremiumFolderCard = ({ folder, summary }: { folder: CollectionFolder, summary?: CollectionSummary }) => {
+    const estimatedValue = summary?.estimatedValue ?? folder.estimatedValue ?? 0
     let grade: 'S' | 'A' | 'B' | 'C' = 'C'
     if (estimatedValue > 10000) grade = 'S'
     else if (estimatedValue > 5000) grade = 'A'
@@ -368,6 +408,12 @@ export default function CollectionsPage() {
 
     // Determine if collection should be featured
     const isFeatured = estimatedValue > 5000
+
+    const averageValue = summary?.averageValue ?? folder.averageValue ?? (folder.itemCount ? estimatedValue / Math.max(folder.itemCount, 1) : 0)
+    const updatedAt = summary?.updatedAt ?? (typeof folder.lastUpdated === "number" ? folder.lastUpdated : (folder.lastUpdated ? new Date(folder.lastUpdated).getTime() : Date.now()))
+    const completionPercentage = summary?.completionPercentage ?? folder.completionPercentage ?? 0
+    const missingCards = summary?.missingCards ?? folder.missingCards ?? 0
+    const setName = summary?.setName ?? null
 
     return (
       <div 
@@ -505,13 +551,13 @@ export default function CollectionsPage() {
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">Avg Value</span>
                 <span className="font-medium">
-                  {formatCurrency((estimatedValue / Math.max(folder.itemCount || 1, 1)))}
+                  {formatCurrency(averageValue)}
                 </span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">Updated</span>
                 <span className="font-medium">
-                  {new Date(folder.lastUpdated || '').toLocaleDateString()}
+                  {new Date(updatedAt).toLocaleDateString()}
                 </span>
               </div>
             </div>
@@ -519,13 +565,13 @@ export default function CollectionsPage() {
             {/* Progress Bar */}
             <div>
               <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>{summary?.setName ? `${summary.setName} Completion` : 'Collection Progress'}</span>
-                <span>{Math.round(summary?.completionPercentage ?? 0)}%</span>
+                <span>{setName ? `${setName} Completion` : 'Collection Progress'}</span>
+                <span>{Math.round(completionPercentage)}%</span>
               </div>
-              <Progress value={summary?.completionPercentage ?? 0} className="h-2" />
-              {summary?.missingCards && summary.missingCards > 0 && (
+              <Progress value={completionPercentage} className="h-2" />
+              {missingCards > 0 && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  {summary.missingCards} cards missing
+                  {missingCards} cards missing
                 </p>
               )}
             </div>
@@ -782,9 +828,12 @@ export default function CollectionsPage() {
                 viewMode === "gallery" && "grid-cols-1 lg:grid-cols-2",
                 viewMode === "compact" && "grid-cols-1 md:grid-cols-3 lg:grid-cols-4"
               )}>
-                {filteredFolders.map((folder) => (
-                  <PremiumFolderCard key={folder._id} folder={folder} />
-                ))}
+                {filteredFolders.map((folder) => {
+                  const summary = summariesMap.get(String(folder._id))
+                  return (
+                    <PremiumFolderCard key={folder._id} folder={folder} summary={summary} />
+                  )
+                })}
               </div>
             )}
           </div>

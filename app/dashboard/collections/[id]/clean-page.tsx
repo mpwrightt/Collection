@@ -149,13 +149,26 @@ export default function CleanFolderDetailPage() {
   const isRealCollectionId = React.useMemo(() => !/^demo-/i.test(String(params.id)), [params.id])
   const itemsData = useQuery(api.collections.listItems, isRealCollectionId ? { collectionId } : ({} as any))
   const items = React.useMemo(() => itemsData ?? [], [itemsData])
-  const summary = useQuery(api.collections.collectionSummary, isRealCollectionId ? ({ collectionId } as any) : "skip") || { totalQuantity: 0, distinctProducts: 0, estimatedValue: 0 }
+  const summary = useQuery(
+    api.collections.collectionSummary,
+    isRealCollectionId ? ({ collectionId } as any) : "skip"
+  ) || {
+    totalQuantity: 0,
+    distinctProducts: 0,
+    estimatedValue: 0,
+    averageValue: 0,
+    completionPercentage: 0,
+    missingCards: 0,
+    latestItemUpdatedAt: 0,
+    updatedAt: 0,
+  }
   const allCollections = useQuery(api.collections.listCollections, ({} as any)) || []
 
   const addItem = useMutation(api.collections.addItem)
   const removeItem = useMutation(api.collections.removeItem)
   const updateItemQuantity = useMutation(api.collections.updateItemQuantity)
   const updateItemFields = useMutation(api.collections.updateItemFields)
+  const refreshCollectionSummary = useMutation(api.collections.refreshCollectionSummary)
 
   const getCategories = useAction(api.tcg.getCategories)
   const getAllGroups = useAction(api.tcg.getAllGroups)
@@ -284,13 +297,21 @@ export default function CleanFolderDetailPage() {
         }
       } catch {}
 
+      if (isRealCollectionId) {
+        try {
+          await refreshCollectionSummary({ collectionId })
+        } catch (error) {
+          console.error("Failed to refresh collection summary:", error)
+        }
+      }
+
       console.log("Condition-specific price refresh complete. Updated", Object.keys(priceMap).length, "products with", Object.keys(enrichedSkuMap).length, "SKU sets")
     } catch (e) {
       console.error("Failed to refresh prices:", e)
     } finally {
       setIsRefreshingPrices(false)
     }
-  }, [items, getProductPrices, upsertPrices])
+  }, [items, getProductPrices, upsertPrices, isRealCollectionId, refreshCollectionSummary, collectionId])
 
   // Fetch product details and prices for items
   React.useEffect(() => {
@@ -350,6 +371,20 @@ export default function CleanFolderDetailPage() {
       }
     })
   }, [items, itemNames, itemThumbs, itemPrices, itemUrls, getConditionPrice])
+
+  const latestItemUpdate = React.useMemo(() => {
+    return items.reduce((max: number, item: any) => {
+      const updated = item.updatedAt ?? item.createdAt ?? 0
+      return updated > max ? updated : max
+    }, 0)
+  }, [items])
+
+  React.useEffect(() => {
+    if (!isRealCollectionId) return
+    refreshCollectionSummary({ collectionId }).catch((error) => {
+      console.error("Failed to refresh cached summary:", error)
+    })
+  }, [collectionId, isRealCollectionId, latestItemUpdate, refreshCollectionSummary])
 
   // Filter and sort cards
   const filteredCards = React.useMemo(() => {

@@ -2,6 +2,184 @@ import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser, getCurrentUserOrThrow, getOrCreateCurrentUser } from "./users";
 
+type CollectionSummaryData = {
+  totalQuantity: number
+  distinctProducts: number
+  estimatedValue: number
+  averageValue: number
+  completionPercentage: number
+  missingCards: number
+  setName: string | null
+  latestItemUpdatedAt: number
+  updatedAt: number
+}
+
+const extractMarketPrice = (priceDoc: any): number => {
+  if (!priceDoc) return 0
+  const data = (priceDoc as any).data ?? priceDoc
+  if (!data) return 0
+
+  if (typeof data.marketPrice === "number") {
+    return Number(data.marketPrice) || 0
+  }
+
+  const candidates = Array.isArray(data.results) ? data.results : Array.isArray(data.Results) ? data.Results : []
+  if (Array.isArray(candidates) && candidates.length > 0) {
+    const normal = candidates.find((r: any) => r?.subTypeName === "Normal" && typeof r.marketPrice === "number")
+    const anyPrice = candidates.find((r: any) => typeof r?.marketPrice === "number")
+    if (normal) return Number(normal.marketPrice) || 0
+    if (anyPrice) return Number(anyPrice.marketPrice) || 0
+  }
+
+  if (Array.isArray(data.results) && data.results[0]?.marketPrice) {
+    return Number(data.results[0].marketPrice) || 0
+  }
+  if (Array.isArray(data.Results) && data.Results[0]?.marketPrice) {
+    return Number(data.Results[0].marketPrice) || 0
+  }
+
+  return 0
+}
+
+async function computeCollectionSummaryInternal(
+  ctx: any,
+  userId: any,
+  collectionId: any
+): Promise<CollectionSummaryData> {
+  const items = await ctx.db
+    .query("collectionItems")
+    .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+    .collect()
+
+  const mine = items.filter((item: any) => String(item.userId) === String(userId))
+
+  let totalQuantity = 0
+  let latestItemUpdatedAt = 0
+  const productSet = new Set<number>()
+  const quantityBySku = new Map<string, { productId: number; skuId?: number; quantity: number }>()
+
+  for (const item of mine) {
+    const quantity = item.quantity ?? 0
+    totalQuantity += quantity
+    productSet.add(item.productId)
+    const updated = item.updatedAt ?? item.createdAt ?? 0
+    if (updated > latestItemUpdatedAt) latestItemUpdatedAt = updated
+
+    const skuKey = `${item.productId}:${item.skuId ?? '_'}`
+    const existing = quantityBySku.get(skuKey)
+    if (existing) {
+      existing.quantity += quantity
+    } else {
+      quantityBySku.set(skuKey, {
+        productId: item.productId,
+        skuId: item.skuId ?? undefined,
+        quantity,
+      })
+    }
+  }
+
+  const priceCache = new Map<string, number>()
+  const getMarketPriceForKey = async (productId: number, skuId?: number) => {
+    const cacheKey = `${productId}:${skuId ?? '_'}`
+    if (priceCache.has(cacheKey)) return priceCache.get(cacheKey) ?? 0
+
+    let record: any = null
+
+    if (typeof skuId === "number") {
+      record = await ctx.db
+        .query("pricingCache")
+        .withIndex("byProductSku", (q: any) => q.eq("productId", productId).eq("skuId", skuId))
+        .first()
+    }
+
+    if (!record) {
+      record = await ctx.db
+        .query("pricingCache")
+        .withIndex("byProductId", (q: any) => q.eq("productId", productId))
+        .first()
+    }
+
+    const price = extractMarketPrice(record)
+    priceCache.set(cacheKey, price)
+    return price
+  }
+
+  let estimatedValue = 0
+  for (const { productId, skuId, quantity } of quantityBySku.values()) {
+    const market = await getMarketPriceForKey(productId, skuId)
+    estimatedValue += quantity * market
+  }
+
+  const distinctProducts = productSet.size
+
+  // Completion metrics (if a target exists)
+  let completionPercentage = 0
+  let missingCards = 0
+  let setName: string | null = null
+
+  const target = await ctx.db
+    .query("collectionTargets")
+    .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+    .first()
+
+  if (target) {
+    const set = await ctx.db
+      .query("sets")
+      .withIndex("bySetId", (q: any) => q.eq("setId", target.setId))
+      .first()
+
+    if (set) {
+      setName = set.name ?? null
+
+      const setCards = await ctx.db
+        .query("setCards")
+        .withIndex("bySetId", (q: any) => q.eq("setId", target.setId))
+        .collect()
+
+      const ownedProductIds = new Set(mine.map((item: any) => item.productId))
+
+      let targetCardNumbers: string[]
+      if (target.targetType === "complete") {
+        targetCardNumbers = setCards.map((card: any) => card.cardNumber)
+      } else if (target.targetType === "custom" && Array.isArray(target.targetCards)) {
+        targetCardNumbers = target.targetCards
+      } else {
+        targetCardNumbers = setCards
+          .filter((card: any) => {
+            if (target.targetType === "holos_only") {
+              return card.rarity?.toLowerCase().includes("holo") || card.rarity?.toLowerCase().includes("rare")
+            }
+            if (target.targetType === "rares_only") {
+              return card.rarity?.toLowerCase().includes("rare")
+            }
+            return true
+          })
+          .map((card: any) => card.cardNumber)
+      }
+
+      const targetCards = setCards.filter((card: any) => targetCardNumbers.includes(card.cardNumber))
+      const ownedTargetCards = targetCards.filter((card: any) => ownedProductIds.has(card.productId))
+
+      completionPercentage = targetCards.length > 0 ? (ownedTargetCards.length / targetCards.length) * 100 : 0
+      missingCards = Math.max(0, targetCards.length - ownedTargetCards.length)
+    }
+  }
+
+  const averageValue = totalQuantity > 0 ? estimatedValue / totalQuantity : 0
+
+  return {
+    totalQuantity,
+    distinctProducts,
+    estimatedValue,
+    averageValue,
+    completionPercentage,
+    missingCards,
+    setName,
+    latestItemUpdatedAt,
+    updatedAt: Date.now(),
+  }
+}
+
 // Create a new collection folder (optionally nested)
 export const createCollection = mutation({
   args: {
@@ -235,138 +413,149 @@ export const listCollectionsWithCounts = query({
 
 // Summary stats for a single collection (quantity, distinct products, estimated value, completion)
 export const collectionSummary = query({
+  args: {
+    collectionId: v.id("collections"),
+    fresh: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { collectionId, fresh }) => {
+    const user = await getCurrentUser(ctx)
+    if (!user) {
+      return {
+        totalQuantity: 0,
+        distinctProducts: 0,
+        estimatedValue: 0,
+        averageValue: 0,
+        completionPercentage: 0,
+        setName: null,
+        missingCards: 0,
+        latestItemUpdatedAt: 0,
+        updatedAt: 0,
+      }
+    }
+
+    let cached: any = null
+    if (!fresh) {
+      cached = await ctx.db
+        .query("collectionSummaries")
+        .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+        .first()
+
+      if (cached && String(cached.userId) !== String(user._id)) {
+        cached = null
+      }
+    }
+
+    if (cached && !fresh) {
+      return {
+        totalQuantity: cached.totalQuantity,
+        distinctProducts: cached.distinctProducts,
+        estimatedValue: cached.estimatedValue,
+        averageValue: cached.averageValue,
+        completionPercentage: cached.completionPercentage,
+        setName: cached.setName ?? null,
+        missingCards: cached.missingCards,
+        latestItemUpdatedAt: cached.latestItemUpdatedAt,
+        updatedAt: cached.updatedAt,
+      }
+    }
+
+    const computed = await computeCollectionSummaryInternal(ctx, user._id, collectionId)
+    return computed
+  },
+})
+
+export const listCollectionSummaries = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getCurrentUser(ctx)
+    if (!user) return []
+
+    const [collections, cachedSummaries] = await Promise.all([
+      ctx.db
+        .query("collections")
+        .withIndex("byUserId", (q: any) => q.eq("userId", user._id))
+        .collect(),
+      ctx.db
+        .query("collectionSummaries")
+        .withIndex("byUserId", (q: any) => q.eq("userId", user._id))
+        .collect(),
+    ])
+
+    const cachedMap = new Map<string, any>()
+    for (const summary of cachedSummaries) {
+      cachedMap.set(String(summary.collectionId), summary)
+    }
+
+    const results: any[] = []
+    for (const collection of collections) {
+      const computed = await computeCollectionSummaryInternal(ctx, user._id, collection._id)
+      const cached = cachedMap.get(String(collection._id))
+      results.push({
+        _id: cached?._id,
+        collectionId: collection._id,
+        totalQuantity: computed.totalQuantity,
+        distinctProducts: computed.distinctProducts,
+        estimatedValue: computed.estimatedValue,
+        averageValue: computed.averageValue,
+        completionPercentage: computed.completionPercentage,
+        missingCards: computed.missingCards,
+        setName: computed.setName,
+        latestItemUpdatedAt: computed.latestItemUpdatedAt,
+        updatedAt: computed.updatedAt,
+      })
+    }
+
+    return results
+  },
+})
+
+export const refreshCollectionSummary = mutation({
   args: { collectionId: v.id("collections") },
   handler: async (ctx, { collectionId }) => {
-    const user = await getCurrentUser(ctx);
-    if (!user) return {
-      totalQuantity: 0,
-      distinctProducts: 0,
-      estimatedValue: 0,
-      completionPercentage: 0,
-      setName: null,
-      missingCards: 0
-    };
-
-    const items = await ctx.db
-      .query("collectionItems")
-      .withIndex("byUserId", (q) => q.eq("userId", user._id))
-      .collect();
-    const mine = items.filter((i) => i.collectionId === collectionId);
-    const totalQuantity = mine.reduce((s, it) => s + (it.quantity ?? 0), 0);
-    const distinctProducts = new Set(mine.map((it) => `${it.productId}:${it.skuId ?? "_"}`)).size;
-
-    // Best-effort value from pricingCache
-    let estimatedValue = 0;
-    for (const it of mine) {
-      const price = await ctx.db
-        .query("pricingCache")
-        .withIndex("byProductId", (q) => q.eq("productId", it.productId))
-        .unique();
-      let market = 0;
-      if (price?.data) {
-        // Handle direct pricing data
-        if (typeof (price as any).data?.marketPrice === 'number') {
-          market = (price as any).data.marketPrice;
-        }
-        // Handle array of pricing results with subTypeName for conditions
-        else if (Array.isArray((price as any).data?.results)) {
-          // Find Normal condition price first, fallback to any available price
-          const results = (price as any).data.results;
-          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
-          const anyPrice = results.find((r: any) => r.marketPrice);
-          const priceRecord = normalPrice || anyPrice;
-          if (priceRecord?.marketPrice) {
-            market = Number(priceRecord.marketPrice) || 0;
-          }
-        }
-        else if (Array.isArray((price as any).data?.Results)) {
-          // Handle capitalized Results array
-          const results = (price as any).data.Results;
-          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
-          const anyPrice = results.find((r: any) => r.marketPrice);
-          const priceRecord = normalPrice || anyPrice;
-          if (priceRecord?.marketPrice) {
-            market = Number(priceRecord.marketPrice) || 0;
-          }
-        }
-        // Handle legacy single result structure
-        else if ((price as any).data?.results?.[0]?.marketPrice) {
-          market = Number((price as any).data.results[0].marketPrice) || 0;
-        } else if ((price as any).data?.Results?.[0]?.marketPrice) {
-          market = Number((price as any).data.Results[0].marketPrice) || 0;
-        }
-      }
-      estimatedValue += (it.quantity ?? 0) * market;
+    const user = await getCurrentUserOrThrow(ctx)
+    const collection = await ctx.db.get(collectionId)
+    if (!collection || String(collection.userId) !== String(user._id)) {
+      throw new Error("Collection not found")
     }
 
-    // Get completion data if there's a collection target
-    const target = await ctx.db
-      .query("collectionTargets")
-      .withIndex("byCollectionId", q => q.eq("collectionId", collectionId))
-      .first();
+    const computed = await computeCollectionSummaryInternal(ctx, user._id, collectionId)
 
-    let completionPercentage = 0;
-    let setName = null;
-    let missingCards = 0;
+    const existing = await ctx.db
+      .query("collectionSummaries")
+      .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+      .first()
 
-    if (target) {
-      const set = await ctx.db
-        .query("sets")
-        .withIndex("bySetId", q => q.eq("setId", target.setId))
-        .first();
-
-      if (set) {
-        setName = set.name;
-
-        const setCards = await ctx.db
-          .query("setCards")
-          .withIndex("bySetId", q => q.eq("setId", target.setId))
-          .collect();
-
-        const ownedProductIds = new Set(mine.map(item => item.productId));
-
-        // Determine target cards based on target type
-        let targetCardNumbers: string[];
-        if (target.targetType === "complete") {
-          targetCardNumbers = setCards.map(card => card.cardNumber);
-        } else if (target.targetType === "custom" && target.targetCards) {
-          targetCardNumbers = target.targetCards;
-        } else {
-          targetCardNumbers = setCards
-            .filter(card => {
-              if (target.targetType === "holos_only") {
-                return card.rarity?.toLowerCase().includes("holo") ||
-                       card.rarity?.toLowerCase().includes("rare");
-              }
-              if (target.targetType === "rares_only") {
-                return card.rarity?.toLowerCase().includes("rare");
-              }
-              return true;
-            })
-            .map(card => card.cardNumber);
-        }
-
-        const targetCards = setCards.filter(card => targetCardNumbers.includes(card.cardNumber));
-        const ownedTargetCards = targetCards.filter(card => ownedProductIds.has(card.productId));
-
-        completionPercentage = targetCards.length > 0
-          ? (ownedTargetCards.length / targetCards.length) * 100
-          : 0;
-
-        missingCards = targetCards.length - ownedTargetCards.length;
-      }
+    if (existing && String(existing.userId) === String(user._id)) {
+      await ctx.db.patch(existing._id, {
+        totalQuantity: computed.totalQuantity,
+        distinctProducts: computed.distinctProducts,
+        estimatedValue: computed.estimatedValue,
+        averageValue: computed.averageValue,
+        completionPercentage: computed.completionPercentage,
+        missingCards: computed.missingCards,
+        setName: computed.setName ?? undefined,
+        latestItemUpdatedAt: computed.latestItemUpdatedAt,
+        updatedAt: computed.updatedAt,
+      })
+    } else {
+      await ctx.db.insert("collectionSummaries", {
+        userId: user._id,
+        collectionId,
+        totalQuantity: computed.totalQuantity,
+        distinctProducts: computed.distinctProducts,
+        estimatedValue: computed.estimatedValue,
+        averageValue: computed.averageValue,
+        completionPercentage: computed.completionPercentage,
+        missingCards: computed.missingCards,
+        setName: computed.setName ?? undefined,
+        latestItemUpdatedAt: computed.latestItemUpdatedAt,
+        updatedAt: computed.updatedAt,
+      })
     }
 
-    return {
-      totalQuantity,
-      distinctProducts,
-      estimatedValue,
-      completionPercentage,
-      setName,
-      missingCards
-    };
-  }
-});
+    return computed
+  },
+})
 
 // Get overall collection statistics for the user
 export const getCollectionStats = query({
@@ -381,60 +570,14 @@ export const getCollectionStats = query({
       .withIndex("byUserId", (q) => q.eq("userId", user._id))
       .collect();
     
-    // Get all user's items
-    const items = await ctx.db
-      .query("collectionItems")
-      .withIndex("byUserId", (q) => q.eq("userId", user._id))
-      .collect();
-    
-    // Calculate total cards
-    const totalCards = items.reduce((sum, item) => sum + (item.quantity ?? 0), 0);
-    
-    // Calculate total value
-    let totalValue = 0;
-    for (const item of items) {
-      const price = await ctx.db
-        .query("pricingCache")
-        .withIndex("byProductId", (q) => q.eq("productId", item.productId))
-        .unique();
-
-      let market = 0;
-      if (price?.data) {
-        // Handle direct pricing data
-        if (typeof (price as any).data?.marketPrice === 'number') {
-          market = (price as any).data.marketPrice;
-        }
-        // Handle array of pricing results with subTypeName for conditions
-        else if (Array.isArray((price as any).data?.results)) {
-          // Find Normal condition price first, fallback to any available price
-          const results = (price as any).data.results;
-          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
-          const anyPrice = results.find((r: any) => r.marketPrice);
-          const priceRecord = normalPrice || anyPrice;
-          if (priceRecord?.marketPrice) {
-            market = Number(priceRecord.marketPrice) || 0;
-          }
-        }
-        else if (Array.isArray((price as any).data?.Results)) {
-          // Handle capitalized Results array
-          const results = (price as any).data.Results;
-          const normalPrice = results.find((r: any) => r.subTypeName === 'Normal' && r.marketPrice);
-          const anyPrice = results.find((r: any) => r.marketPrice);
-          const priceRecord = normalPrice || anyPrice;
-          if (priceRecord?.marketPrice) {
-            market = Number(priceRecord.marketPrice) || 0;
-          }
-        }
-        // Handle legacy single result structure
-        else if ((price as any).data?.results?.[0]?.marketPrice) {
-          market = Number((price as any).data.results[0].marketPrice) || 0;
-        } else if ((price as any).data?.Results?.[0]?.marketPrice) {
-          market = Number((price as any).data.Results[0].marketPrice) || 0;
-        }
-      }
-      totalValue += (item.quantity ?? 0) * market;
+    let totalCards = 0
+    let totalValue = 0
+    for (const collection of collections) {
+      const summary = await computeCollectionSummaryInternal(ctx, user._id, collection._id)
+      totalCards += summary.totalQuantity
+      totalValue += summary.estimatedValue
     }
-    
+
     return {
       totalCards,
       totalValue,

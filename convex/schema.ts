@@ -66,6 +66,23 @@ export default defineSchema({
     .index("byProductId", ["productId"])
     .index("byProductSku", ["productId", "skuId"]),
 
+  // Cached rollup metrics for each collection folder
+  collectionSummaries: defineTable({
+    userId: v.id("users"),
+    collectionId: v.id("collections"),
+    totalQuantity: v.number(),
+    distinctProducts: v.number(),
+    estimatedValue: v.number(),
+    averageValue: v.number(),
+    completionPercentage: v.number(),
+    missingCards: v.number(),
+    setName: v.optional(v.string()),
+    latestItemUpdatedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("byCollectionId", ["collectionId"])
+    .index("byUserId", ["userId"]),
+
   // API tokens cache (e.g., TCGplayer bearer tokens)
   apiTokens: defineTable({
     provider: v.string(), // e.g., "tcgplayer"

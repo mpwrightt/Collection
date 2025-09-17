@@ -89,17 +89,34 @@ export const getHoldings = query({
       .collect();
 
     // Aggregate by productId:skuId
-    const agg = new Map<string, { productId: number; skuId?: number; quantity: number; lastAt: number; anyCollectionId?: any }>();
+    const agg = new Map<string, {
+      productId: number
+      skuId?: number
+      quantity: number
+      lastAt: number
+      anyCollectionId?: any
+      categoryId?: number
+    }>();
     for (const it of items) {
       const key = `${it.productId}:${it.skuId ?? '_'}`;
       const prev = agg.get(key);
       const t = it.createdAt ?? it._creationTime;
       if (!prev) {
-        agg.set(key, { productId: it.productId, skuId: it.skuId ?? undefined, quantity: it.quantity ?? 0, lastAt: t, anyCollectionId: it.collectionId });
+        agg.set(key, {
+          productId: it.productId,
+          skuId: it.skuId ?? undefined,
+          quantity: it.quantity ?? 0,
+          lastAt: t,
+          anyCollectionId: it.collectionId,
+          categoryId: it.categoryId,
+        });
       } else {
         prev.quantity += it.quantity ?? 0;
         prev.lastAt = Math.max(prev.lastAt, t);
         prev.anyCollectionId = prev.anyCollectionId ?? it.collectionId;
+        if (!prev.categoryId && it.categoryId) {
+          prev.categoryId = it.categoryId;
+        }
       }
     }
 
@@ -109,7 +126,7 @@ export const getHoldings = query({
 
     const rows = await Promise.all(
       slice.map(async (key) => {
-        const { productId, skuId, quantity, lastAt, anyCollectionId } = agg.get(key)!;
+        const { productId, skuId, quantity, lastAt, anyCollectionId, categoryId } = agg.get(key)!;
         let collectionName: string | null = null;
         if (anyCollectionId) {
           const c = (await ctx.db.get(anyCollectionId as any)) as any;
@@ -139,6 +156,7 @@ export const getHoldings = query({
           marketPrice,
           totalValue,
           addedAt: lastAt,
+          categoryId: categoryId ?? null,
         };
       })
     );
