@@ -382,21 +382,35 @@ export const getCategories = action({
   handler: async (ctx) => {
     'use node';
     const svc = getPythonServiceUrl();
-    if (svc) {
-      const url = `${svc}/categories`;
-      return await fetchJson(url, { method: "GET" });
+    const out: any[] = [];
+    let offset = 0;
+    const limit = 200;
+    while (true) {
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      let page: any;
+      if (svc) {
+        const url = `${svc}/categories?${params.toString()}`;
+        page = await fetchJson(url, { method: "GET" });
+      } else {
+        const clientId = process.env.TCGPLAYER_CLIENT_ID!;
+        const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
+        const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
+        if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
+        await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+        const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
+        const url = apiBase(version, `catalog/categories?${params.toString()}`);
+        page = await fetchJson(url, {
+          method: "GET",
+          headers: { Accept: "application/json", Authorization: `${type} ${token}` },
+        });
+      }
+      const list = page?.results || page?.Results || page?.data || [];
+      out.push(...list);
+      if (!list.length || list.length < limit) break;
+      offset += limit;
+      if (offset > 2000) break; // hard cap to avoid runaway
     }
-    const clientId = process.env.TCGPLAYER_CLIENT_ID!;
-    const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
-    const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
-    if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
-    const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
-    const url = apiBase(version, "catalog/categories");
-    return await fetchJson(url, {
-      method: "GET",
-      headers: { Accept: "application/json", Authorization: `${type} ${token}` },
-    });
+    return { Success: true, Results: out };
   },
 });
 

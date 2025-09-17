@@ -233,12 +233,20 @@ export const listCollectionsWithCounts = query({
   }
 });
 
-// Summary stats for a single collection (quantity, distinct products, estimated value)
+// Summary stats for a single collection (quantity, distinct products, estimated value, completion)
 export const collectionSummary = query({
   args: { collectionId: v.id("collections") },
   handler: async (ctx, { collectionId }) => {
     const user = await getCurrentUser(ctx);
-    if (!user) return { totalQuantity: 0, distinctProducts: 0, estimatedValue: 0 };
+    if (!user) return {
+      totalQuantity: 0,
+      distinctProducts: 0,
+      estimatedValue: 0,
+      completionPercentage: 0,
+      setName: null,
+      missingCards: 0
+    };
+
     const items = await ctx.db
       .query("collectionItems")
       .withIndex("byUserId", (q) => q.eq("userId", user._id))
@@ -246,6 +254,7 @@ export const collectionSummary = query({
     const mine = items.filter((i) => i.collectionId === collectionId);
     const totalQuantity = mine.reduce((s, it) => s + (it.quantity ?? 0), 0);
     const distinctProducts = new Set(mine.map((it) => `${it.productId}:${it.skuId ?? "_"}`)).size;
+
     // Best-effort value from pricingCache
     let estimatedValue = 0;
     for (const it of mine) {
@@ -289,7 +298,73 @@ export const collectionSummary = query({
       }
       estimatedValue += (it.quantity ?? 0) * market;
     }
-    return { totalQuantity, distinctProducts, estimatedValue };
+
+    // Get completion data if there's a collection target
+    const target = await ctx.db
+      .query("collectionTargets")
+      .withIndex("byCollectionId", q => q.eq("collectionId", collectionId))
+      .first();
+
+    let completionPercentage = 0;
+    let setName = null;
+    let missingCards = 0;
+
+    if (target) {
+      const set = await ctx.db
+        .query("sets")
+        .withIndex("bySetId", q => q.eq("setId", target.setId))
+        .first();
+
+      if (set) {
+        setName = set.name;
+
+        const setCards = await ctx.db
+          .query("setCards")
+          .withIndex("bySetId", q => q.eq("setId", target.setId))
+          .collect();
+
+        const ownedProductIds = new Set(mine.map(item => item.productId));
+
+        // Determine target cards based on target type
+        let targetCardNumbers: string[];
+        if (target.targetType === "complete") {
+          targetCardNumbers = setCards.map(card => card.cardNumber);
+        } else if (target.targetType === "custom" && target.targetCards) {
+          targetCardNumbers = target.targetCards;
+        } else {
+          targetCardNumbers = setCards
+            .filter(card => {
+              if (target.targetType === "holos_only") {
+                return card.rarity?.toLowerCase().includes("holo") ||
+                       card.rarity?.toLowerCase().includes("rare");
+              }
+              if (target.targetType === "rares_only") {
+                return card.rarity?.toLowerCase().includes("rare");
+              }
+              return true;
+            })
+            .map(card => card.cardNumber);
+        }
+
+        const targetCards = setCards.filter(card => targetCardNumbers.includes(card.cardNumber));
+        const ownedTargetCards = targetCards.filter(card => ownedProductIds.has(card.productId));
+
+        completionPercentage = targetCards.length > 0
+          ? (ownedTargetCards.length / targetCards.length) * 100
+          : 0;
+
+        missingCards = targetCards.length - ownedTargetCards.length;
+      }
+    }
+
+    return {
+      totalQuantity,
+      distinctProducts,
+      estimatedValue,
+      completionPercentage,
+      setName,
+      missingCards
+    };
   }
 });
 

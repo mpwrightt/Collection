@@ -384,16 +384,46 @@ export default function CleanFolderDetailPage() {
     return filtered
   }, [renderCards, searchQuery, sortBy])
 
-  // Derive a few client-side stats
-  const topCard = React.useMemo(() => {
-    return [...filteredCards].sort((a, b) => b.marketPrice - a.marketPrice)[0]
-  }, [filteredCards])
+  // Enhanced KPI calculations
+  const kpiData = React.useMemo(() => {
+    // Use backend summary when available, fallback to computed
+    const backendSummary = summary && summary.totalQuantity > 0 ? summary : null
 
-  const computedTotals = React.useMemo(() => {
-    const totalQuantity = filteredCards.reduce((s, c) => s + (c.quantity || 0), 0)
-    const estimatedValue = filteredCards.reduce((s, c) => s + (c.marketPrice * (c.quantity || 0)), 0)
-    return { totalQuantity, estimatedValue }
-  }, [filteredCards])
+    const totalQuantity = backendSummary?.totalQuantity || filteredCards.reduce((s, c) => s + (c.quantity || 0), 0)
+    const distinctProducts = backendSummary?.distinctProducts || new Set(filteredCards.map(c => c.productId)).size
+    const estimatedValue = backendSummary?.estimatedValue || filteredCards.reduce((s, c) => s + (c.marketPrice * (c.quantity || 0)), 0)
+
+    // Additional computed metrics
+    const avgCardValue = totalQuantity > 0 ? estimatedValue / totalQuantity : 0
+    const topCard = [...filteredCards].sort((a, b) => (b.marketPrice * b.quantity) - (a.marketPrice * a.quantity))[0]
+    const totalValue = filteredCards.reduce((s, c) => s + (c.marketPrice * c.quantity), 0)
+
+    // Condition breakdown
+    const conditionBreakdown = filteredCards.reduce((acc, card) => {
+      const condition = card.condition || 'NM'
+      acc[condition] = (acc[condition] || 0) + card.quantity
+      return acc
+    }, {} as Record<string, number>)
+
+    // Value distribution
+    const highValueCards = filteredCards.filter(c => c.marketPrice >= 10).length
+    const midValueCards = filteredCards.filter(c => c.marketPrice >= 1 && c.marketPrice < 10).length
+    const lowValueCards = filteredCards.filter(c => c.marketPrice < 1).length
+
+    return {
+      totalQuantity,
+      distinctProducts,
+      estimatedValue,
+      avgCardValue,
+      topCard,
+      totalValue,
+      conditionBreakdown,
+      highValueCards,
+      midValueCards,
+      lowValueCards,
+      isUsingBackendData: !!backendSummary
+    }
+  }, [filteredCards, summary])
 
   const folderMeta = React.useMemo(() => {
     const found = (allCollections as any[]).find(c => String(c._id) === String(collectionId))
@@ -668,198 +698,168 @@ export default function CleanFolderDetailPage() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/10">
-        {/* Collection Header: sticky under global dashboard header */}
-        <div className="sticky top-[var(--header-height)] z-40 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
-          <div className="px-4 lg:px-6 py-6">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-4">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => router.push("/dashboard/collections")}
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <div className="flex items-center gap-3">
-                  <div className="p-3 rounded-xl bg-gradient-to-br from-yellow-500 to-amber-600">
-                    <FolderOpen className="h-6 w-6 text-white" />
-                  </div>
-                  <div>
-                    <h1 className="text-3xl font-bold">{folderMeta.name}</h1>
-                    {folderMeta.description && (
-                      <p className="text-muted-foreground">{folderMeta.description}</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setBulkMode(!bulkMode)}
-                  className={cn(bulkMode && "bg-primary/10 border-primary")}
-                >
-                  <CheckSquare className="h-4 w-4 mr-2" />
-                  {bulkMode ? "Exit Selection" : "Select Cards"}
-                </Button>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={refreshPrices}
-                  disabled={isRefreshingPrices}
-                  className="bg-gradient-to-r from-green-500/10 to-green-600/10 border-green-500/20"
-                >
-                  {isRefreshingPrices ? (
-                    <>
-                      <div className="animate-spin h-4 w-4 mr-2 border-2 border-green-500 border-t-transparent rounded-full" />
-                      Refreshing...
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="h-4 w-4 mr-2" />
-                      Refresh Prices
-                    </>
-                  )}
-                </Button>
-
-                <Button className="bg-gradient-to-r from-primary to-primary/80" onClick={() => setAddOpen(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Cards
-                </Button>
-                {process.env.NODE_ENV !== 'production' && (
-                  <Button variant="outline" size="sm" onClick={seedTestItems}>
-                    Seed Test Items
-                  </Button>
-                )}
-                <AddCardsDialogV2
-                  open={addOpen}
-                  onOpenChange={setAddOpen}
-                  onAddCards={async (cards) => {
-                    // Add all selected cards
-                    await Promise.all(cards.map(async (c: any) => {
-                      const pid = Number(c.productId || c.ProductId)
-                      const skuId = c.skuId ? Number(c.skuId) : undefined
-                      const cat = Number(c.categoryId || c.CategoryId) || 0
-                      const qty = Number(c.quantity || 1)
-                      const condition = c.condition as string | undefined
-                      await addItem({ collectionId: isRealCollectionId ? collectionId : undefined, categoryId: cat, productId: pid, skuId, quantity: qty, condition })
-                    }))
-                    // Upsert pricing cache for all distinct products
-                    try {
-                      const pids = Array.from(new Set(cards.map((c: any) => Number(c.productId || c.ProductId)).filter(Boolean)))
-                      if (pids.length > 0) {
-                        const pr = await getProductPrices({ productIds: pids })
-                        const plist: any[] = (pr as any)?.results || (pr as any)?.Results || (pr as any)?.data || []
-                        const entries = plist.map((entry: any) => ({
-                          productId: Number(entry.productId || entry.ProductId),
-                          categoryId: 0,
-                          currency: 'USD',
-                          data: entry,
-                        }))
-                        if (entries.length > 0) {
-                          await upsertPrices({ entries })
-                        }
-                      }
-                    } catch {}
-                  }}
-                  getCategories={() => getCategories({})}
-                  getAllGroups={(categoryId: number) => getAllGroups({ categoryId })}
-                  searchProducts={(params: any) => searchProducts(params)}
-                  getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
-                  getSkus={(ids: number[]) => getSkus({ productIds: ids })}
-                />
-                
-                {/* Card Details Modal */}
-                <CardDetailsModal
-                  open={detailsModalOpen}
-                  onOpenChange={setDetailsModalOpen}
-                  card={{
-                    ...selectedCardForDetails,
-                    tcgPlayerUrl: selectedCardForDetails?.tcgPlayerUrl || itemUrls[String(selectedCardForDetails?.productId)] || `https://www.tcgplayer.com/product/${selectedCardForDetails?.productId}`
-                  }}
-                  onUpdateCard={handleUpdateCard}
-                  onDeleteCard={handleDeleteCard}
-                  getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
-                  getProductPrices={(ids: number[]) => getProductPrices({ productIds: ids })}
-                  getSkus={(ids: number[]) => getSkus({ productIds: ids })}
-                />
-              </div>
+        {/* Collection Header: sticky at top */}
+        <div className="sticky top-0 z-40 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
+          <div className="px-4 lg:px-6 py-4">
+            <div className="flex items-center gap-2 mb-4">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => router.push("/dashboard/collections")}
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              <h1 className="text-xl font-semibold">{folderMeta.name}</h1>
             </div>
 
-            {/* Stats Cards (smaller, data-driven) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-              <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Total Cards</p>
-                      <p className="text-xl font-semibold">{computedTotals.totalQuantity}</p>
-                      <p className="text-[11px] text-muted-foreground">{filteredCards.length} unique</p>
-                    </div>
-                    <Package2 className="h-6 w-6 text-blue-500" />
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Hidden modals and dialogs */}
+            <AddCardsDialogV2
+              open={addOpen}
+              onOpenChange={setAddOpen}
+              onAddCards={async (cards) => {
+                // Add all selected cards
+                await Promise.all(cards.map(async (c: any) => {
+                  const pid = Number(c.productId || c.ProductId)
+                  const skuId = c.skuId ? Number(c.skuId) : undefined
+                  const cat = Number(c.categoryId || c.CategoryId) || 0
+                  const qty = Number(c.quantity || 1)
+                  const condition = c.condition as string | undefined
+                  await addItem({ collectionId: isRealCollectionId ? collectionId : undefined, categoryId: cat, productId: pid, skuId, quantity: qty, condition })
+                }))
+                // Upsert pricing cache for all distinct products
+                try {
+                  const pids = Array.from(new Set(cards.map((c: any) => Number(c.productId || c.ProductId)).filter(Boolean)))
+                  if (pids.length > 0) {
+                    const pr = await getProductPrices({ productIds: pids })
+                    const plist: any[] = (pr as any)?.results || (pr as any)?.Results || (pr as any)?.data || []
+                    const entries = plist.map((entry: any) => ({
+                      productId: Number(entry.productId || entry.ProductId),
+                      categoryId: 0,
+                      currency: 'USD',
+                      data: entry,
+                    }))
+                    if (entries.length > 0) {
+                      await upsertPrices({ entries })
+                    }
+                  }
+                } catch {}
+              }}
+              getCategories={() => getCategories({})}
+              getAllGroups={(categoryId: number) => getAllGroups({ categoryId })}
+              searchProducts={(params: any) => searchProducts(params)}
+              getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
+              getSkus={(ids: number[]) => getSkus({ productIds: ids })}
+            />
 
-              <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Total Value</p>
-                      <p className="text-xl font-semibold">${computedTotals.estimatedValue.toLocaleString()}</p>
-                      <p className="text-[11px] text-green-500">
-                        Last updated: {lastPriceRefresh.toLocaleTimeString()}
-                      </p>
-                    </div>
-                    <DollarSign className="h-6 w-6 text-green-500" />
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Card Details Modal */}
+            <CardDetailsModal
+              open={detailsModalOpen}
+              onOpenChange={setDetailsModalOpen}
+              card={{
+                ...selectedCardForDetails,
+                tcgPlayerUrl: selectedCardForDetails?.tcgPlayerUrl || itemUrls[String(selectedCardForDetails?.productId)] || `https://www.tcgplayer.com/product/${selectedCardForDetails?.productId}`
+              }}
+              onUpdateCard={handleUpdateCard}
+              onDeleteCard={handleDeleteCard}
+              getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
+              getProductPrices={(ids: number[]) => getProductPrices({ productIds: ids })}
+              getSkus={(ids: number[]) => getSkus({ productIds: ids })}
+            />
 
-              <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Avg Card Value</p>
-                      <p className="text-xl font-semibold">${(computedTotals.totalQuantity ? (computedTotals.estimatedValue / computedTotals.totalQuantity) : 0).toFixed(2)}</p>
-                      <p className="text-[11px] text-muted-foreground">per card</p>
-                    </div>
-                    <BarChart3 className="h-6 w-6 text-purple-500" />
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Compact KPI Dashboard */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-base font-semibold">Collection Analytics</h2>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full",
+                    kpiData.isUsingBackendData ? "bg-green-500" : "bg-yellow-500"
+                  )} />
+                  {kpiData.isUsingBackendData ? "Live" : "Filtered"}
+                </div>
+              </div>
 
-              <Card className="bg-gradient-to-br from-yellow-500/10 to-yellow-600/5 border-yellow-500/20">
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Most Valuable</p>
-                      <p className="text-sm font-semibold line-clamp-1">{topCard?.name}</p>
-                      <p className="text-[11px] text-yellow-500">${topCard?.marketPrice ?? 0}</p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <Card className="border-0 bg-gradient-to-br from-blue-50/80 to-blue-100/60 dark:from-blue-950/30 dark:to-blue-900/20">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-blue-700 dark:text-blue-300 uppercase tracking-wide">
+                          Cards
+                        </p>
+                        <p className="text-xl font-bold text-blue-900 dark:text-blue-100">
+                          {kpiData.totalQuantity.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-blue-600 dark:text-blue-400">
+                          {kpiData.distinctProducts} unique
+                        </p>
+                      </div>
+                      <Package2 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                     </div>
-                    <Trophy className="h-6 w-6 text-yellow-500" />
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
 
-              <Card className="bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
-                <CardContent className="p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Distinct Products</p>
-                      <p className="text-xl font-semibold">{new Set(filteredCards.map(c => c.productId)).size}</p>
-                      <p className="text-[11px] text-muted-foreground">in this view</p>
+                <Card className="border-0 bg-gradient-to-br from-emerald-50/80 to-emerald-100/60 dark:from-emerald-950/30 dark:to-emerald-900/20">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300 uppercase tracking-wide">
+                          Value
+                        </p>
+                        <p className="text-xl font-bold text-emerald-900 dark:text-emerald-100">
+                          ${kpiData.estimatedValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                        </p>
+                        <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                          ${kpiData.avgCardValue.toFixed(2)} avg
+                        </p>
+                      </div>
+                      <DollarSign className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
                     </div>
-                    <Star className="h-6 w-6 text-red-500" />
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 bg-gradient-to-br from-amber-50/80 to-amber-100/60 dark:from-amber-950/30 dark:to-amber-900/20">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-amber-700 dark:text-amber-300 uppercase tracking-wide">
+                          Top Card
+                        </p>
+                        <p className="text-sm font-bold text-amber-900 dark:text-amber-100 line-clamp-1">
+                          {kpiData.topCard?.name || "No cards"}
+                        </p>
+                        <p className="text-xs text-amber-600 dark:text-amber-400">
+                          ${(kpiData.topCard?.marketPrice || 0).toFixed(0)}
+                        </p>
+                      </div>
+                      <Trophy className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 bg-gradient-to-br from-violet-50/80 to-violet-100/60 dark:from-violet-950/30 dark:to-violet-900/20">
+                  <CardContent className="p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-violet-700 dark:text-violet-300 uppercase tracking-wide">
+                          High Value
+                        </p>
+                        <p className="text-xl font-bold text-violet-900 dark:text-violet-100">
+                          {kpiData.highValueCards}
+                        </p>
+                        <p className="text-xs text-violet-600 dark:text-violet-400">
+                          $10+ cards
+                        </p>
+                      </div>
+                      <BarChart3 className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             </div>
 
             {/* Controls Bar */}
-            <div className="flex flex-col lg:flex-row gap-4">
+            <div className="flex items-center gap-2">
               <div className="relative flex-1 max-w-md">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -870,51 +870,91 @@ export default function CleanFolderDetailPage() {
                 />
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* View Mode */}
-                <div className="flex rounded-lg border border-border overflow-hidden">
-                  {VIEW_MODES.map((mode) => (
-                    <Tooltip key={mode.value}>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant={viewMode === mode.value ? "default" : "ghost"}
-                          size="sm"
-                          className={cn(
-                            "rounded-none",
-                            viewMode === mode.value && "pointer-events-none"
-                          )}
-                          onClick={() => setViewMode(mode.value as any)}
-                        >
-                          <mode.icon className="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{mode.label} View</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  ))}
-                </div>
-
-                {/* Sort */}
-                <Select value={sortBy} onValueChange={setSortBy}>
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SORT_OPTIONS.map(option => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                {/* Filters */}
-                <Button variant="outline">
-                  <Filter className="h-4 w-4 mr-2" />
-                  Filters
-                </Button>
+              {/* View Mode */}
+              <div className="flex rounded-lg border border-border overflow-hidden">
+                {VIEW_MODES.map((mode) => (
+                  <Tooltip key={mode.value}>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant={viewMode === mode.value ? "default" : "ghost"}
+                        size="sm"
+                        className={cn(
+                          "rounded-none",
+                          viewMode === mode.value && "pointer-events-none"
+                        )}
+                        onClick={() => setViewMode(mode.value as any)}
+                      >
+                        <mode.icon className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{mode.label} View</p>
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
               </div>
+
+              {/* Sort */}
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORT_OPTIONS.map(option => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Filters */}
+              <Button variant="outline">
+                <Filter className="h-4 w-4 mr-2" />
+                Filters
+              </Button>
+
+              {/* Action Buttons */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBulkMode(!bulkMode)}
+                className={cn(bulkMode && "bg-primary/10 border-primary")}
+              >
+                <CheckSquare className="h-4 w-4 mr-2" />
+                {bulkMode ? "Exit Selection" : "Select Cards"}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={refreshPrices}
+                disabled={isRefreshingPrices}
+                className="bg-gradient-to-r from-green-500/10 to-green-600/10 border-green-500/20"
+              >
+                {isRefreshingPrices ? (
+                  <>
+                    <div className="animate-spin h-4 w-4 mr-2 border-2 border-green-500 border-t-transparent rounded-full" />
+                    Refreshing...
+                  </>
+                ) : (
+                  <>
+                    <Zap className="h-4 w-4 mr-2" />
+                    Refresh Prices
+                  </>
+                )}
+              </Button>
+
+              <Button className="bg-gradient-to-r from-primary to-primary/80" onClick={() => setAddOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Cards
+              </Button>
+
+              {process.env.NODE_ENV !== 'production' && (
+                <Button variant="outline" size="sm" onClick={seedTestItems}>
+                  Seed Test Items
+                </Button>
+              )}
             </div>
           </div>
         </div>

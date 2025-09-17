@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { CreateFolderDialog } from "@/components/collections/create-folder-dialog"
+import { SetTargetDialog } from "@/components/collections/set-target-dialog"
 import {
   Plus,
   Search,
@@ -177,21 +178,18 @@ export default function CollectionsPage() {
   const router = useRouter()
   
   // Convex queries and mutations
-  const folders = DEMO_MODE ? DEMO_FOLDERS : (useQuery(api.collections.listCollectionsWithCounts, { parentId: undefined }) || [])
+  const folders = useQuery(api.collections.listCollectionsWithCounts, { parentId: undefined }) || []
   const createCollection = useMutation(api.collections.createCollection)
   const updateCollection = useMutation(api.collections.updateCollection)
   const deleteCollection = useMutation(api.collections.deleteCollection)
-  
+  const addPricingForUserCards = useMutation(api.debug.addPricingForUserCards)
+
   // Get collection stats
-  const collectionStats = DEMO_MODE ? {
-    totalCards: DEMO_FOLDERS.reduce((s, f) => s + f.itemCount, 0),
-    totalValue: DEMO_FOLDERS.reduce((s, f) => s + (f.estimatedValue || 0), 0),
-    totalFolders: DEMO_FOLDERS.length
-  } : (useQuery(api.collections.getCollectionStats) || { 
-    totalCards: 0, 
-    totalValue: 0, 
-    totalFolders: folders.length 
-  })
+  const collectionStats = useQuery(api.collections.getCollectionStats) || {
+    totalCards: 0,
+    totalValue: 0,
+    totalFolders: folders.length
+  }
   
   // UI State
   const [viewMode, setViewMode] = React.useState<'grid' | 'list' | 'gallery' | 'compact'>('grid')
@@ -201,20 +199,37 @@ export default function CollectionsPage() {
   const [busyId, setBusyId] = React.useState<string | null>(null)
   const [isLoading, setIsLoading] = React.useState(false)
 
-  // Process folders with enhanced data
+  // Process folders with enhanced data using real pricing data
   const enhancedFolders = React.useMemo(() => {
     const base = folders as any[]
-    return base.map((folder: any) => ({
-      ...folder,
-      estimatedValue: folder.estimatedValue ?? 0,
-      valueChange: folder.valueChange ?? 0,
-      lastUpdated: folder.updatedAt || folder.createdAt || new Date().toISOString(),
-      icon: "folder",
-      color: "from-blue-500 to-blue-600",
-      tags: folder.labels || [],
-      featured: Boolean(folder.featured),
-      grade: (folder.grade as any) || 'A'
-    }))
+    const colorOptions = [
+      "from-blue-500 to-blue-600",
+      "from-purple-500 to-purple-600",
+      "from-green-500 to-green-600",
+      "from-orange-500 to-orange-600",
+      "from-red-500 to-red-600",
+      "from-indigo-500 to-indigo-600",
+      "from-pink-500 to-pink-600",
+      "from-teal-500 to-teal-600"
+    ]
+
+    return base.map((folder: any) => {
+      // Extract color from labels if available
+      const colorLabel = folder.labels?.find((label: string) => label.startsWith('color:'))
+      const extractedColor = colorLabel ? colorLabel.replace('color:', '') : null
+
+      return {
+        ...folder,
+        estimatedValue: 0, // Will be populated by individual queries
+        valueChange: 0, // We don't track historical data yet
+        lastUpdated: folder.updatedAt || folder.createdAt || Date.now(),
+        icon: "folder",
+        color: extractedColor || colorOptions[Math.abs(folder._id?.charCodeAt?.(0) || 0) % colorOptions.length],
+        tags: (folder.labels || []).filter((label: string) => !label.startsWith('color:') && !label.startsWith('icon:')),
+        featured: false, // Will be determined by value
+        grade: 'C' as const // Will be calculated based on value
+      }
+    })
   }, [folders])
 
   // Filter and sort folders
@@ -312,25 +327,19 @@ export default function CollectionsPage() {
     router.push(`/dashboard/collections/${id}`)
   }
 
-  // Calculate portfolio stats
+  // Calculate portfolio stats using real collection stats API
   const portfolioStats = React.useMemo(() => {
-    const totalValue = filteredFolders.reduce((sum, f) => sum + f.estimatedValue, 0)
-    const totalChange = filteredFolders.reduce((sum, f) => sum + (f.estimatedValue * f.valueChange / 100), 0)
-    const totalCards = filteredFolders.reduce((sum, f) => sum + f.itemCount, 0)
-    const topGainer = [...filteredFolders].sort((a, b) => b.valueChange - a.valueChange)[0]
-    const topLoser = [...filteredFolders].sort((a, b) => a.valueChange - b.valueChange)[0]
-
     return {
-      totalValue,
-      totalChange,
-      changePercent: totalValue > 0 ? (totalChange / totalValue) * 100 : 0,
-      totalCards,
-      totalFolders: filteredFolders.length,
-      topGainer,
-      topLoser,
-      averageValue: filteredFolders.length > 0 ? totalValue / filteredFolders.length : 0
+      totalValue: collectionStats.totalValue,
+      totalChange: 0, // We don't track historical data yet
+      changePercent: 0, // We don't track historical data yet
+      totalCards: collectionStats.totalCards,
+      totalFolders: collectionStats.totalFolders,
+      topGainer: null, // We don't track historical data yet
+      topLoser: null, // We don't track historical data yet
+      averageValue: collectionStats.totalFolders > 0 ? collectionStats.totalValue / collectionStats.totalFolders : 0
     }
-  }, [filteredFolders])
+  }, [collectionStats])
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -342,10 +351,24 @@ export default function CollectionsPage() {
   }
 
   const PremiumFolderCard = ({ folder }: { folder: CollectionFolder }) => {
-    const grade = GRADE_BADGES[folder.grade || 'C']
-    const GradeIcon = grade.icon
+    const summary = useQuery(api.collections.collectionSummary, { collectionId: folder._id as any }) || null
 
-    const summary = DEMO_MODE ? null : (useQuery(api.collections.collectionSummary, { collectionId: folder._id as any }) || null)
+    // Debug logging
+    console.log(`Collection "${folder.name}" summary:`, summary)
+
+    // Calculate grade based on estimated value
+    const estimatedValue = summary?.estimatedValue ?? 0
+    let grade: 'S' | 'A' | 'B' | 'C' = 'C'
+    if (estimatedValue > 10000) grade = 'S'
+    else if (estimatedValue > 5000) grade = 'A'
+    else if (estimatedValue > 1000) grade = 'B'
+
+    const gradeBadge = GRADE_BADGES[grade]
+    const GradeIcon = gradeBadge.icon
+
+    // Determine if collection should be featured
+    const isFeatured = estimatedValue > 5000
+
     return (
       <div 
         className={cn(
@@ -353,12 +376,12 @@ export default function CollectionsPage() {
           "hover:scale-[1.02] hover:shadow-2xl",
           "bg-gradient-to-br from-background/95 via-background/80 to-muted/20",
           "backdrop-blur-xl border-muted-foreground/10 rounded-lg border",
-          folder.featured && "ring-2 ring-primary/50"
+          isFeatured && "ring-2 ring-primary/50"
         )}
         onClick={() => router.push(`/dashboard/collections/${folder._id}`)}
       >
         {/* Featured Badge */}
-        {folder.featured && (
+        {isFeatured && (
           <div className="absolute top-2 right-2 z-10">
             <Badge className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white border-0">
               <Flame className="h-3 w-3 mr-1" />
@@ -416,6 +439,30 @@ export default function CollectionsPage() {
                   <Eye className="h-4 w-4 mr-2" />
                   Quick View
                 </DropdownMenuItem>
+                <SetTargetDialog
+                  collectionId={folder._id}
+                  collectionName={folder.name}
+                  trigger={
+                    <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                      <Target className="h-4 w-4 mr-2" />
+                      Set Target
+                    </DropdownMenuItem>
+                  }
+                />
+                <DropdownMenuItem onClick={async () => {
+                  try {
+                    console.log("Adding pricing for collection:", folder._id);
+                    const result = await addPricingForUserCards({ collectionId: folder._id as any });
+                    console.log("Pricing added:", result);
+                    alert(`Added pricing for ${result.pricingEntriesCreated} products!`);
+                  } catch (error) {
+                    console.error("Failed to add pricing:", error);
+                    alert("Failed to add pricing");
+                  }
+                }}>
+                  <DollarSign className="h-4 w-4 mr-2" />
+                  Fix Pricing
+                </DropdownMenuItem>
                 <DropdownMenuItem>
                   <Edit3 className="h-4 w-4 mr-2" />
                   Edit
@@ -438,7 +485,7 @@ export default function CollectionsPage() {
             <div>
               <p className="text-sm text-muted-foreground">Total Value</p>
               <div className="flex items-baseline gap-2 mt-1">
-                <p className="text-3xl font-bold">{formatCurrency((summary?.estimatedValue ?? folder.estimatedValue ?? 0))}</p>
+                <p className="text-3xl font-bold">{formatCurrency(estimatedValue)}</p>
               </div>
             </div>
 
@@ -448,8 +495,8 @@ export default function CollectionsPage() {
                 <GradeIcon className="h-5 w-5" />
                 <span className="text-sm font-medium">Collection Grade</span>
               </div>
-              <Badge className={cn("bg-gradient-to-r", grade.color, "text-white border-0")}>
-                {folder.grade} - {grade.label}
+              <Badge className={cn("bg-gradient-to-r", gradeBadge.color, "text-white border-0")}>
+                {grade} - {gradeBadge.label}
               </Badge>
             </div>
 
@@ -458,7 +505,7 @@ export default function CollectionsPage() {
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                 <span className="text-muted-foreground">Avg Value</span>
                 <span className="font-medium">
-                  {formatCurrency(((summary?.estimatedValue ?? folder.estimatedValue ?? 0) / Math.max(folder.itemCount || 1, 1)))}
+                  {formatCurrency((estimatedValue / Math.max(folder.itemCount || 1, 1)))}
                 </span>
               </div>
               <div className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
@@ -472,10 +519,15 @@ export default function CollectionsPage() {
             {/* Progress Bar */}
             <div>
               <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>Collection Completeness</span>
-                <span>78%</span>
+                <span>{summary?.setName ? `${summary.setName} Completion` : 'Collection Progress'}</span>
+                <span>{Math.round(summary?.completionPercentage ?? 0)}%</span>
               </div>
-              <Progress value={78} className="h-2" />
+              <Progress value={summary?.completionPercentage ?? 0} className="h-2" />
+              {summary?.missingCards && summary.missingCards > 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {summary.missingCards} cards missing
+                </p>
+              )}
             </div>
           </div>
 
@@ -489,33 +541,31 @@ export default function CollectionsPage() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/10">
-        {!DEMO_MODE && (
-          <SignedOut>
-            <div className="flex items-center justify-center min-h-screen p-4">
-              <Card className="max-w-lg w-full bg-gradient-to-br from-background to-muted/20 border-muted-foreground/10">
-                <CardContent className="p-8 text-center">
-                  <div className="mb-6">
-                    <div className="inline-flex p-4 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 mb-4">
-                      <Package className="h-12 w-12 text-primary" />
-                    </div>
-                    <h1 className="text-3xl font-bold mb-2">Premium Collection Tracker</h1>
-                    <p className="text-muted-foreground">
-                      The most advanced TCG collection management platform
-                    </p>
+        <SignedOut>
+          <div className="flex items-center justify-center min-h-screen p-4">
+            <Card className="max-w-lg w-full bg-gradient-to-br from-background to-muted/20 border-muted-foreground/10">
+              <CardContent className="p-8 text-center">
+                <div className="mb-6">
+                  <div className="inline-flex p-4 rounded-full bg-gradient-to-br from-primary/20 to-primary/10 mb-4">
+                    <Package className="h-12 w-12 text-primary" />
                   </div>
-                  <SignInButton mode="modal">
-                    <Button size="lg" className="w-full bg-gradient-to-r from-primary to-primary/80">
-                      <Sparkles className="h-4 w-4 mr-2" />
-                      Get Started
-                    </Button>
-                  </SignInButton>
-                </CardContent>
-              </Card>
-            </div>
-          </SignedOut>
-        )}
+                  <h1 className="text-3xl font-bold mb-2">Premium Collection Tracker</h1>
+                  <p className="text-muted-foreground">
+                    The most advanced TCG collection management platform
+                  </p>
+                </div>
+                <SignInButton mode="modal">
+                  <Button size="lg" className="w-full bg-gradient-to-r from-primary to-primary/80">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    Get Started
+                  </Button>
+                </SignInButton>
+              </CardContent>
+            </Card>
+          </div>
+        </SignedOut>
 
-        {DEMO_MODE ? (
+        <SignedIn>
           <>
           {/* Premium Header */}
           <div className="sticky top-0 z-50 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
@@ -613,47 +663,24 @@ export default function CollectionsPage() {
                   </CardContent>
                 </Card>
 
-                {/* Top Gainer */}
-                {portfolioStats.topGainer && (
+                {/* Most Valuable Collection */}
+                {filteredFolders.length > 0 && (
                   <Card className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border-emerald-500/20">
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="text-sm text-muted-foreground">Top Gainer</p>
+                          <p className="text-sm text-muted-foreground">Most Valuable</p>
                           <p className="text-lg font-bold mt-1 line-clamp-1">
-                            {portfolioStats.topGainer.name}
+                            {filteredFolders.length > 0 ? filteredFolders[0].name : "None"}
                           </p>
                           <div className="flex items-center gap-1 mt-1">
-                            <TrendingUp className="h-3 w-3 text-emerald-500" />
+                            <DollarSign className="h-3 w-3 text-emerald-500" />
                             <span className="text-xs font-medium text-emerald-500">
-                              +{portfolioStats.topGainer.valueChange.toFixed(1)}%
+                              Top Collection
                             </span>
                           </div>
                         </div>
                         <Trophy className="h-8 w-8 text-emerald-500" />
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Top Loser */}
-                {portfolioStats.topLoser && portfolioStats.topLoser.valueChange < 0 && (
-                  <Card className="bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
-                    <CardContent className="p-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm text-muted-foreground">Top Loser</p>
-                          <p className="text-lg font-bold mt-1 line-clamp-1">
-                            {portfolioStats.topLoser.name}
-                          </p>
-                          <div className="flex items-center gap-1 mt-1">
-                            <TrendingDown className="h-3 w-3 text-red-500" />
-                            <span className="text-xs font-medium text-red-500">
-                              {portfolioStats.topLoser.valueChange.toFixed(1)}%
-                            </span>
-                          </div>
-                        </div>
-                        <Activity className="h-8 w-8 text-red-500" />
                       </div>
                     </CardContent>
                   </Card>
@@ -762,83 +789,7 @@ export default function CollectionsPage() {
             )}
           </div>
           </>
-        ) : (
-          <SignedIn>
-            {/* Premium Header */}
-            <div className="sticky top-0 z-50 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
-              <div className="px-4 lg:px-6 py-6">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h1 className="text-4xl font-bold bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
-                      My Collections
-                    </h1>
-                    <p className="text-muted-foreground mt-1">
-                      Manage your premium TCG portfolio
-                    </p>
-                  </div>
-                  
-                  <div className="flex items-center gap-3">
-                    <Button variant="outline" size="sm">
-                      <Upload className="h-4 w-4 mr-2" />
-                      Import
-                    </Button>
-                    <Button variant="outline" size="sm">
-                      <Download className="h-4 w-4 mr-2" />
-                      Export
-                    </Button>
-                    <Button 
-                      onClick={() => setCreateDialogOpen(true)}
-                      className="bg-gradient-to-r from-primary to-primary/80"
-                    >
-                      <FolderPlus className="h-4 w-4 mr-2" />
-                      New Folder
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Folders Grid */}
-            <div className="px-4 lg:px-6 py-6">
-              {filteredFolders.length === 0 ? (
-                <Card className="border-dashed bg-gradient-to-br from-background to-muted/10">
-                  <CardContent className="flex flex-col items-center justify-center py-16 text-center">
-                    <div className="rounded-full bg-gradient-to-br from-primary/20 to-primary/10 p-4 mb-4">
-                      <Package className="h-12 w-12 text-primary" />
-                    </div>
-                    <h3 className="text-lg font-semibold mb-2">
-                      {searchQuery ? "No folders found" : "Start your collection"}
-                    </h3>
-                    <p className="text-muted-foreground mb-6 max-w-sm">
-                      {searchQuery 
-                        ? `No folders match "${searchQuery}"`
-                        : "Create your first folder to start organizing your TCG collection"
-                      }
-                    </p>
-                    {!searchQuery && (
-                      <Button onClick={() => setCreateDialogOpen(true)}>
-                        <FolderPlus className="h-4 w-4 mr-2" />
-                        Create First Folder
-                      </Button>
-                    )}
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className={cn(
-                  "grid gap-6",
-                  viewMode === "grid" && "grid-cols-1 md:grid-cols-2 lg:grid-cols-3",
-                  viewMode === "list" && "grid-cols-1",
-                  viewMode === "gallery" && "grid-cols-1 lg:grid-cols-2",
-                  viewMode === "compact" && "grid-cols-1 md:grid-cols-3 lg:grid-cols-4"
-                )}>
-                  {filteredFolders.map((folder) => (
-                    <PremiumFolderCard key={folder._id} folder={folder} />
-                  ))}
-                </div>
-              )}
-            </div>
-          </SignedIn>
-        )}
+        </SignedIn>
 
         {/* Create Folder Dialog */}
         <CreateFolderDialog

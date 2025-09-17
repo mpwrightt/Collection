@@ -21,14 +21,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { 
   Search, 
   Plus, 
   Minus, 
-  ShoppingCart, 
-  X, 
-  Loader2, 
+  X,
+  Loader2,
   Package,
   ChevronRight,
   Filter,
@@ -78,16 +76,15 @@ export function AddCardsDialogV2({
   getProductDetails,
   getSkus,
 }: AddCardsDialogV2Props) {
-  const [activeTab, setActiveTab] = useState("search")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
-  
+
   // Search State
   const [searchQuery, setSearchQuery] = useState("")
   const debouncedSearch = useDebounce(searchQuery, 500)
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
-  
+
   // Filter State
   const [categories, setCategories] = useState<any[]>([])
   const [selectedCategory, setSelectedCategory] = useState<string>("")
@@ -95,13 +92,12 @@ export function AddCardsDialogV2({
   const [selectedGroup, setSelectedGroup] = useState<string>("")
   const [loadingGroups, setLoadingGroups] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(false)
-  
-  // Cart State
-  const [cart, setCart] = useState<any[]>([])
+
+  // Selection State
   const [selectedCards, setSelectedCards] = useState<Set<string>>(new Set())
   const [bulkCondition, setBulkCondition] = useState("NM")
   const [bulkQuantity, setBulkQuantity] = useState(1)
-  const [addingToCart, setAddingToCart] = useState(false)
+  const [addingToCollection, setAddingToCollection] = useState(false)
   
   // Load categories on mount
   useEffect(() => {
@@ -134,6 +130,7 @@ export function AddCardsDialogV2({
     try {
       const result = await getCategories()
       const list = (result?.Results ?? result?.results ?? result?.data ?? []) as any[]
+      console.log(`Loaded ${list.length} categories:`, list.map(c => c.name))
       setCategories(list)
     } catch (error) {
       console.error("Failed to load categories:", error)
@@ -194,29 +191,29 @@ export function AddCardsDialogV2({
     setSelectedCards(newSelection)
   }
   
-  async function addSelectedToCart() {
-    const selected = searchResults.filter(card => 
+  async function addSelectedToCollection() {
+    const selected = searchResults.filter(card =>
       selectedCards.has(String(card.productId || card.ProductId))
     )
-    
+
     if (selected.length === 0) return
-    
-    setAddingToCart(true)
+
+    setAddingToCollection(true)
     try {
       // Get SKUs for selected cards
       const productIds = selected.map(c => Number(c.productId || c.ProductId))
       const skusRes = await getSkus(productIds)
       const skuMap = new Map<number, any[]>()
-      
+
       const skuList = skusRes?.results || skusRes?.Results || skusRes?.data || []
       for (const sku of skuList) {
         const pid = sku.productId
         if (!skuMap.has(pid)) skuMap.set(pid, [])
         skuMap.get(pid)!.push(sku)
       }
-      
-      // Add to cart with default SKU
-      const cartItems = selected.map(card => {
+
+      // Create cards array for direct addition to collection
+      const cardsToAdd = selected.map(card => {
         const pid = Number(card.productId || card.ProductId)
         const skus = skuMap.get(pid) || []
         return {
@@ -227,37 +224,22 @@ export function AddCardsDialogV2({
           id: `${pid}-${skus[0]?.skuId || 'default'}-${bulkCondition}`
         }
       })
-      
-      setCart([...cart, ...cartItems])
+
+      // Add directly to collection
+      await onAddCards(cardsToAdd)
+
+      // Reset and close dialog
       setSelectedCards(new Set())
-      setActiveTab("cart")
+      setSearchResults([])
+      setSearchQuery("")
+      onOpenChange(false)
     } catch (error) {
-      console.error("Failed to add to cart:", error)
+      console.error("Failed to add to collection:", error)
     } finally {
-      setAddingToCart(false)
+      setAddingToCollection(false)
     }
   }
   
-  function updateCartItem(id: string, updates: any) {
-    setCart(cart.map(item => 
-      item.id === id ? { ...item, ...updates } : item
-    ))
-  }
-  
-  function removeFromCart(id: string) {
-    setCart(cart.filter(item => item.id !== id))
-  }
-  
-  async function handleConfirmAdd() {
-    if (cart.length === 0) return
-    
-    await onAddCards(cart)
-    setCart([])
-    setSearchResults([])
-    setSearchQuery("")
-    setSelectedCards(new Set())
-    onOpenChange(false)
-  }
   
   const selectedCategoryName = categories.find(c => String(c.categoryId) === selectedCategory)?.name
   const selectedGroupName = groups.find(g => String(g.groupId) === selectedGroup)?.name || 
@@ -273,19 +255,9 @@ export function AddCardsDialogV2({
           </DialogDescription>
         </DialogHeader>
         
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-          <TabsList className="grid w-full grid-cols-2 px-6 shrink-0">
-            <TabsTrigger value="search" className="gap-2">
-              <Search className="h-4 w-4" />
-              Search Cards
-            </TabsTrigger>
-            <TabsTrigger value="cart" className="gap-2">
-              <ShoppingCart className="h-4 w-4" />
-              Cart ({cart.length})
-            </TabsTrigger>
-          </TabsList>
+        <div className="flex-1 flex flex-col overflow-hidden">
           
-          <TabsContent value="search" className="flex-1 overflow-hidden flex flex-col mt-0">
+          <div className="flex-1 overflow-hidden flex flex-col mt-0">
             {/* Search Bar */}
             <div className="px-6 py-4 border-b space-y-4 shrink-0">
               <div className="flex gap-2">
@@ -324,13 +296,15 @@ export function AddCardsDialogV2({
                       <SelectTrigger>
                         <SelectValue placeholder="All TCGs" />
                       </SelectTrigger>
-                      <SelectContent className="max-h-[300px] overflow-y-auto">
-                        <SelectItem value="_all">All TCGs</SelectItem>
-                        {categories.map((cat) => (
-                          <SelectItem key={cat.categoryId} value={String(cat.categoryId)}>
-                            {cat.name || cat.displayName || `Category ${cat.categoryId}`}
-                          </SelectItem>
-                        ))}
+                      <SelectContent className="max-h-[400px]">
+                        <ScrollArea className="h-[400px]">
+                          <SelectItem value="_all">All TCGs</SelectItem>
+                          {categories.map((cat) => (
+                            <SelectItem key={cat.categoryId} value={String(cat.categoryId)}>
+                              {cat.name || cat.displayName || `Category ${cat.categoryId}`}
+                            </SelectItem>
+                          ))}
+                        </ScrollArea>
                       </SelectContent>
                     </Select>
                   </div>
@@ -405,13 +379,13 @@ export function AddCardsDialogV2({
                       </div>
                     </div>
                   </div>
-                  <Button 
+                  <Button
                     size="sm"
-                    onClick={addSelectedToCart}
-                    disabled={addingToCart}
+                    onClick={addSelectedToCollection}
+                    disabled={addingToCollection}
                   >
-                    {addingToCart && <Loader2 className="h-3 w-3 mr-2 animate-spin" />}
-                    Add to Cart
+                    {addingToCollection && <Loader2 className="h-3 w-3 mr-2 animate-spin" />}
+                    Add to Collection
                   </Button>
                 </div>
               )}
@@ -534,123 +508,20 @@ export function AddCardsDialogV2({
                 </div>
               )}
             </ScrollArea>
-          </TabsContent>
-          
-          <TabsContent value="cart" className="flex-1 overflow-hidden flex flex-col mt-0">
-            <ScrollArea className="flex-1 px-6 py-4">
-              {cart.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <ShoppingCart className="h-12 w-12 text-muted-foreground mb-4" />
-                  <h3 className="font-semibold mb-2">Cart is empty</h3>
-                  <p className="text-sm text-muted-foreground text-center max-w-sm mb-4">
-                    Search for cards and add them to your cart
-                  </p>
-                  <Button 
-                    variant="outline" 
-                    onClick={() => setActiveTab("search")}
-                  >
-                    <Search className="h-4 w-4 mr-2" />
-                    Search Cards
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {cart.map((item) => (
-                    <div key={item.id} className="flex items-center gap-4 p-4 rounded-lg border bg-card">
-                      <img
-                        src={`https://product-images.tcgplayer.com/${item.productId || item.ProductId}.jpg`}
-                        alt={item.name || item.ProductName}
-                        className="w-20 h-28 object-cover rounded"
-                      />
-                      <div className="flex-1 space-y-2">
-                        <div>
-                          <p className="font-medium">{item.name || item.ProductName}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {item.groupName} • #{item.productId || item.ProductId}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <Select 
-                            value={item.condition} 
-                            onValueChange={(value) => updateCartItem(item.id, { condition: value })}
-                          >
-                            <SelectTrigger className="h-8 w-32">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {CONDITIONS.map(c => (
-                                <SelectItem key={c.value} value={c.value}>
-                                  <span className={c.color}>{c.label}</span>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              className="h-8 w-8"
-                              onClick={() => updateCartItem(item.id, { 
-                                quantity: Math.max(1, item.quantity - 1) 
-                              })}
-                            >
-                              <Minus className="h-3 w-3" />
-                            </Button>
-                            <Input
-                              type="number"
-                              min="1"
-                              value={item.quantity}
-                              onChange={(e) => updateCartItem(item.id, { 
-                                quantity: parseInt(e.target.value) || 1 
-                              })}
-                              className="h-8 w-16 text-center"
-                            />
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              className="h-8 w-8"
-                              onClick={() => updateCartItem(item.id, { 
-                                quantity: item.quantity + 1 
-                              })}
-                            >
-                              <Plus className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        onClick={() => removeFromCart(item.id)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </ScrollArea>
-          </TabsContent>
-        </Tabs>
+          </div>
+        </div>
         
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t shrink-0">
           <div className="text-sm text-muted-foreground">
-            {activeTab === "cart" 
-              ? `${cart.length} card${cart.length !== 1 ? 's' : ''} in cart`
+            {selectedCards.size > 0
+              ? `${selectedCards.size} card${selectedCards.size !== 1 ? 's' : ''} selected`
               : `${searchResults.length} card${searchResults.length !== 1 ? 's' : ''} found`
             }
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            {activeTab === "cart" && cart.length > 0 && (
-              <Button onClick={handleConfirmAdd}>
-                Add to Collection ({cart.length})
-              </Button>
-            )}
-          </div>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

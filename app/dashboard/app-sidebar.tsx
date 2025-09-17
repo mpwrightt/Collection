@@ -34,9 +34,11 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { ChatMaxingIconColoured } from "@/components/logo"
 import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
 import Link from "next/link"
 
 const data = {
@@ -95,20 +97,26 @@ const data = {
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
-    <Sidebar collapsible="offcanvas" {...props}>
+    <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              asChild
-              className="data-[slot=sidebar-menu-button]:!p-1.5"
-            >
-              <Link href="/">
-                <ChatMaxingIconColoured className="!size-6" />
-                <span className="text-base font-semibold">Starter DIY</span>
-                <Badge variant="outline" className="text-muted-foreground  text-xs">Demo</Badge>
-              </Link>
-            </SidebarMenuButton>
+            <div className="flex items-center justify-between">
+              <SidebarMenuButton
+                asChild
+                className="data-[slot=sidebar-menu-button]:!p-1.5 flex-1"
+              >
+                <Link href="/">
+                  <ChatMaxingIconColoured className="!size-6" />
+                  <span className="text-base font-semibold">Starter DIY</span>
+                  <Badge variant="outline" className="text-muted-foreground text-xs">Demo</Badge>
+                </Link>
+              </SidebarMenuButton>
+              <div className="flex items-center">
+                <Separator orientation="vertical" className="mx-2 h-4" />
+                <SidebarTrigger className="-mr-1" />
+              </div>
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>

@@ -124,4 +124,54 @@ export default defineSchema({
   })
     .index("byDeckId", ["deckId"])
     .index("byDeckSection", ["deckId", "section"]),
+
+  // Card sets/expansions (e.g., "Pokemon Base Set 2", "MTG Alpha")
+  sets: defineTable({
+    categoryId: v.number(), // TCG category (1=MTG, 3=Pokemon, etc.)
+    setId: v.string(), // TCGplayer set/group ID
+    name: v.string(), // "Pokemon Base Set 2"
+    abbreviation: v.optional(v.string()), // "BS2"
+    totalCards: v.number(), // expected total cards in set
+    releaseDate: v.optional(v.string()), // "1999-02-24"
+    description: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("byCategoryId", ["categoryId"])
+    .index("bySetId", ["setId"])
+    .index("byCategoryName", ["categoryId", "name"]),
+
+  // Individual cards within sets with their expected positions
+  setCards: defineTable({
+    setId: v.string(), // references sets.setId
+    cardNumber: v.string(), // "1/130", "25/102", etc.
+    productId: v.number(), // TCGplayer product ID
+    name: v.string(), // "Pikachu", "Black Lotus"
+    rarity: v.optional(v.string()), // "Common", "Rare", "Mythic"
+    category: v.optional(v.string()), // "Pokemon", "Trainer", etc.
+    estimatedPrice: v.optional(v.number()), // cached market price
+    priceUpdatedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("bySetId", ["setId"])
+    .index("byProductId", ["productId"])
+    .index("bySetCardNumber", ["setId", "cardNumber"]),
+
+  // Collection completion targets (what sets users are trying to complete)
+  collectionTargets: defineTable({
+    userId: v.id("users"),
+    collectionId: v.id("collections"),
+    setId: v.string(), // references sets.setId
+    targetType: v.string(), // "complete", "holos_only", "rares_only", "custom"
+    targetCards: v.optional(v.array(v.string())), // specific card numbers if targetType="custom"
+    priority: v.optional(v.number()), // 1=high, 2=medium, 3=low
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("byUserId", ["userId"])
+    .index("byCollectionId", ["collectionId"])
+    .index("bySetId", ["setId"])
+    .index("byUserSet", ["userId", "setId"]),
 });

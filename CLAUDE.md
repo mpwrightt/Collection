@@ -17,6 +17,23 @@ This is a Next.js 15 SaaS starter template with integrated authentication (Clerk
 - `npx convex dev` - Start Convex development server (required for database)
 - Run this in a separate terminal alongside `npm run dev`
 
+## IMPORTANT: Server Management Rules
+
+🚨 **NEVER START OR RESTART SERVERS** 🚨
+
+- **DO NOT** run `npm run dev`, `npm start`, or any server commands
+- **DO NOT** run `npx convex dev` or Convex deployment commands
+- **DO NOT** attempt to restart, kill, or manage running processes
+- **DO NOT** use background server commands with `run_in_background: true`
+
+The user manages all servers manually. Claude should only:
+- ✅ Read and edit code files
+- ✅ Run diagnostic commands like `curl` to test endpoints
+- ✅ Run build/lint commands for validation
+- ✅ Use development tools that don't affect running servers
+
+If you need to test changes, ask the user to restart servers manually.
+
 ## Architecture Overview
 
 ### Tech Stack
