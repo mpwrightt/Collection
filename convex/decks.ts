@@ -104,9 +104,19 @@ export const listDecks = query({
 export const getDeck = query({
   args: { deckId: v.id("decks") },
   handler: async (ctx, { deckId }) => {
-    const user = await getCurrentUserOrThrow(ctx)
+    const isDev = (process as any)?.env?.NODE_ENV !== 'production'
+    const user = await getCurrentUser(ctx)
+
     const deck = await ctx.db.get(deckId)
-    if (!deck || String(deck.userId) !== String(user._id)) throw new Error("Deck not found")
+    if (!deck) throw new Error("Deck not found")
+
+    // Enforce ownership when a user exists or in production
+    if (user) {
+      if (String(deck.userId) !== String(user._id)) throw new Error("Deck not found")
+    } else if (!isDev) {
+      // In production require auth
+      throw new Error("Can't get current user")
+    }
 
     let formatCode: string | null = null
     if (deck.formatId) {

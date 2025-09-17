@@ -84,6 +84,32 @@ export const LogoStroke = ({ className }: { className?: string }) => {
     )
 }
 
+// App-specific icon: simple stacked trading cards symbol
+export function CollectionLogoIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      className={cn("w-6 h-6", className)}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
+      {/* back card */}
+      <rect x="5" y="4" rx="2" ry="2" width="12" height="16" opacity="0.35" />
+      {/* middle card */}
+      <rect x="7" y="3" rx="2" ry="2" width="12" height="16" opacity="0.55" />
+      {/* front card */}
+      <rect x="3" y="5" rx="2.2" ry="2.2" width="12" height="16" />
+      {/* emblem (star) */}
+      <path d="M9 12.5l1.2 0.8-0.4 1.4 1.2-0.8 1.2 0.8-0.4-1.4 1.2-0.8h-1.5L11 11l-0.5 1.5H9z" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
 export function ChatMaxingIcon(props: React.SVGProps<SVGSVGElement>) {
     return (
       <svg
