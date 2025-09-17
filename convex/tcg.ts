@@ -13,6 +13,47 @@ export const getTokenRecord = internalQuery({
   },
 });
 
+// Get group (set) details by IDs
+export const getGroupsByIds = action({
+  args: { groupIds: v.array(v.number()) },
+  handler: async (ctx, { groupIds }) => {
+    'use node';
+    if (!Array.isArray(groupIds) || groupIds.length === 0) {
+      return { Success: true, Results: [] };
+    }
+    const clean = Array.from(new Set(groupIds.map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0)));
+    if (clean.length === 0) return { Success: true, Results: [] };
+    const svc = getPythonServiceUrl();
+    if (svc) {
+      // If python service exposes groups by ids route, prefer it; otherwise fall through to direct API
+      try {
+        const url = `${svc}/groups/by-ids?ids=${encodeURIComponent(clean.join(','))}`;
+        return await fetchJson(url, { method: 'GET' });
+      } catch {}
+    }
+    const clientId = process.env.TCGPLAYER_CLIENT_ID!;
+    const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
+    const version = process.env.TCGPLAYER_API_VERSION || 'v1.39.0';
+    if (!clientId || !clientSecret) throw new Error('Missing TCGPLAYER credentials');
+    const results: any[] = [];
+    for (const gid of clean) {
+      await acquireSlotWithRetry(ctx, { provider: 'tcgplayer', rate: 10, windowMs: 1000 });
+      const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
+      const url = apiBase(version, `catalog/groups/${gid}`);
+      try {
+        const payload = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+        const list = payload?.results || payload?.Results || payload?.data || [];
+        if (Array.isArray(list) && list.length) results.push(...list);
+      } catch (e) {
+        // ignore individual group failures
+      }
+      // tiny pacing between calls
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return { Success: true, Results: results };
+  },
+});
+
 // Get media for a category (icon/banner); proxy to service or direct API
 export const getCategoryMedia = action({
   args: { categoryId: v.number() },
@@ -64,6 +105,8 @@ export const getAllGroups = action({
       if (!list.length || list.length < limit) break;
       offset += limit;
       if (offset > 5000) break; // hard cap to avoid runaway
+      // tiny delay between pages to avoid bursts
+      await new Promise((r) => setTimeout(r, 60));
     }
     return { Success: true, Results: out };
   }
@@ -237,6 +280,40 @@ export const acquireRateLimitSlot = internalMutation({
   },
 });
 
+// Non-throwing variant used by helpers to avoid noisy logs when we expect to wait.
+export const tryAcquireRateLimitSlot = internalMutation({
+  args: { provider: v.string(), rate: v.number(), windowMs: v.number() },
+  handler: async (ctx, { provider, rate, windowMs }) => {
+    const now = Date.now();
+    const windowStart = now - (now % windowMs);
+    const existing = await ctx.db
+      .query("rateLimits")
+      .withIndex("byProvider", (q) => q.eq("provider", provider))
+      .unique();
+
+    if (!existing || existing.windowStart !== windowStart || existing.windowMs !== windowMs) {
+      if (existing) {
+        await ctx.db.patch(existing._id, { windowStart, count: 1, windowMs });
+      } else {
+        await ctx.db.insert("rateLimits", { provider, windowStart, count: 1, windowMs });
+      }
+      return { ok: true, waitMs: 0 };
+    }
+
+    // If we hit the rate, return suggested waitMs instead of throwing
+    if (existing.count >= rate) {
+      const windowEnd = existing.windowStart + existing.windowMs;
+      const timeLeft = Math.max(0, windowEnd - now);
+      // Add small jitter to avoid stampedes
+      const jitter = Math.floor(Math.random() * Math.max(25, Math.ceil(existing.windowMs / Math.max(1, rate))));
+      return { ok: false, waitMs: timeLeft + jitter };
+    }
+
+    await ctx.db.patch(existing._id, { count: existing.count + 1 });
+    return { ok: true, waitMs: 0 };
+  },
+});
+
 // Internal mutation to upsert a provider token
 export const upsertTokenRecord = internalMutation({
   args: {
@@ -363,21 +440,18 @@ async function acquireSlotWithRetry(
 ) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      await ctx.runMutation(internal.tcg.acquireRateLimitSlot, args);
-      return;
+      const res: any = await ctx.runMutation(internal.tcg.tryAcquireRateLimitSlot, args);
+      if (res && res.ok) {
+        return;
+      }
+      // Rate exceeded: wait recommended time and retry without consuming attempts
+      const wait = Math.max(25, Math.min(1500, Number(res?.waitMs) || Math.ceil(args.windowMs / Math.max(1, args.rate))));
+      await new Promise((r) => setTimeout(r, wait));
+      attempt--;
+      continue;
     } catch (e: any) {
       const msg = String(e?.message || e);
       const isConflict = /rateLimits/.test(msg) && /changed while this mutation/.test(msg);
-      const isRate = /Rate limit exceeded/.test(msg);
-      if (isRate) {
-        // Wait approximately one slot interval before retrying, with jitter
-        const perCall = Math.max(50, Math.ceil(args.windowMs / Math.max(1, args.rate)));
-        const backoff = perCall + Math.floor(Math.random() * perCall);
-        await new Promise((r) => setTimeout(r, backoff));
-        // don't count towards retries for rate exceeds
-        attempt--;
-        continue;
-      }
       if (!isConflict || attempt === retries) {
         throw e;
       }
@@ -420,6 +494,8 @@ export const getCategories = action({
       if (!list.length || list.length < limit) break;
       offset += limit;
       if (offset > 2000) break; // hard cap to avoid runaway
+      // tiny delay between pages to avoid bursts
+      await new Promise((r) => setTimeout(r, 60));
     }
     return { Success: true, Results: out };
   },

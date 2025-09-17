@@ -12,6 +12,8 @@ import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Sparkles, Plus, Minus, Trash2, Search, Loader2, Filter, ShoppingCart, Save } from "lucide-react"
+import { CardDetailsModal } from "@/components/collections/card-details-modal"
+import { setColorOverrides } from "@/lib/setColors"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 
@@ -52,6 +54,9 @@ type ProductInfo = {
   imageUrl: string
   url?: string
   setName?: string
+  groupId?: number
+  setAbbr?: string
+  setColor?: string
 }
 
 const SECTION_LABELS: Record<DeckSection, string> = {
@@ -149,7 +154,8 @@ function parseProductDetails(payload: any): { productId: number; info: ProductIn
     const url = item?.url ?? item?.product?.url ?? `https://www.tcgplayer.com/product/${productId}`
     const imageUrl = item?.imageUrl ?? item?.productImage ?? fallbackImage(productId)
     const setName = item?.groupName ?? item?.setName ?? item?.product?.setName
-    out.push({ productId, info: { name, imageUrl, url, setName } })
+    const groupId = Number(item?.groupId ?? item?.GroupId ?? item?.product?.groupId)
+    out.push({ productId, info: { name, imageUrl, url, setName, groupId: Number.isFinite(groupId) ? groupId : undefined } })
   }
   return out
 }
@@ -233,6 +239,8 @@ function DecksPageImpl() {
   const searchProducts = useAction(api.tcg.searchProducts)
   const searchLegalProducts = useAction(api.formats.searchLegalProducts)
   const getProductPrices = useAction(api.tcg.getProductPrices)
+  const getSkus = useAction(api.tcg.getSkus)
+  const getGroupsByIds = useAction(api.tcg.getGroupsByIds)
   const refreshDeckPrices = useAction(api.decks.refreshDeckPrices)
 
   const currentTcgOption = React.useMemo(
@@ -342,6 +350,79 @@ function DecksPageImpl() {
   const holdingsByProduct = holdingsMemo.byProduct
 
   const [productInfo, setProductInfo] = React.useState<Record<string, ProductInfo>>({})
+  const [groupInfo, setGroupInfo] = React.useState<Record<string, { name: string; abbreviation?: string }>>({})
+
+  // Utility: derive a stable color from abbreviation/name
+  const deriveSetColor = React.useCallback((abbr?: string, fallbackKey?: string): string | undefined => {
+    const key = (abbr || fallbackKey || '').toUpperCase()
+    if (!key) return undefined
+    let hash = 0
+    for (let i = 0; i < key.length; i++) {
+      hash = key.charCodeAt(i) + ((hash << 5) - hash)
+      hash |= 0
+    }
+    const hue = Math.abs(hash) % 360
+    return `hsl(${hue} 70% 50%)`
+  }, [])
+
+  // Enrich missing group (set) info using groupIds from product details
+  React.useEffect(() => {
+    const allInfos = Object.values(productInfo)
+    const missing: number[] = []
+    for (const info of allInfos) {
+      const gid = (info as ProductInfo).groupId
+      if (typeof gid === 'number' && !groupInfo[String(gid)]) {
+        missing.push(gid)
+      }
+    }
+    if (missing.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      const collected: Record<string, { name: string; abbreviation?: string }> = {}
+      for (let i = 0; i < missing.length; i += 25) {
+        const chunk = Array.from(new Set(missing.slice(i, i + 25)))
+        try {
+          const payload = await getGroupsByIds({ groupIds: chunk } as any)
+          const list: any[] = payload?.results || payload?.Results || payload?.data || []
+          for (const g of list) {
+            const gid = Number(g?.groupId ?? g?.GroupId)
+            if (!Number.isFinite(gid)) continue
+            const name = g?.name ?? g?.groupName ?? `Set #${gid}`
+            const abbr = g?.abbreviation ?? g?.code
+            collected[String(gid)] = { name, abbreviation: abbr }
+          }
+        } catch (e) {
+          // ignore group fetch errors per batch
+        }
+      }
+      if (!cancelled && Object.keys(collected).length) {
+        setGroupInfo((prev) => ({ ...prev, ...collected }))
+        // also backfill setName/abbr/color into productInfo entries that have groupId
+        setProductInfo((prev) => {
+          const next: Record<string, ProductInfo> = { ...prev }
+          for (const [pid, info] of Object.entries(prev)) {
+            const gid = (info as ProductInfo).groupId
+            if (typeof gid === 'number') {
+              const g = collected[String(gid)] || groupInfo[String(gid)]
+              if (g) {
+                const updated: ProductInfo = { ...(info as ProductInfo) }
+                if (!updated.setName && g.name) updated.setName = g.name
+                if (!updated.setAbbr && g.abbreviation) updated.setAbbr = g.abbreviation
+                if (!updated.setColor) {
+                  const byId = setColorOverrides[String(gid)]
+                  const byAbbr = g.abbreviation ? setColorOverrides[String(g.abbreviation).toUpperCase()] : undefined
+                  updated.setColor = byId || byAbbr || deriveSetColor(g.abbreviation, String(gid))
+                }
+                next[pid] = updated
+              }
+            }
+          }
+          return next
+        })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [productInfo, groupInfo, getGroupsByIds, deriveSetColor])
 
   React.useEffect(() => {
     const missingIds = Array.from(
@@ -546,11 +627,13 @@ function DecksPageImpl() {
               if (next[key]) continue
               const name =
                 item?.name ?? item?.productName ?? item?.ProductName ?? `#${productId}`
+              const groupId = Number(item?.groupId ?? item?.GroupId)
               next[key] = {
                 name,
                 imageUrl: fallbackImage(productId),
                 url: item?.url ?? `https://www.tcgplayer.com/product/${productId}`,
                 setName: item?.groupName ?? item?.setName,
+                groupId: Number.isFinite(groupId) ? groupId : undefined,
               }
             }
             return next
@@ -733,6 +816,36 @@ function DecksPageImpl() {
   }, [deckCards, priceMap])
 
   const [showMissingOnly, setShowMissingOnly] = React.useState(false)
+
+  // Card details modal state
+  const [detailsOpen, setDetailsOpen] = React.useState(false)
+  const [detailsCtx, setDetailsCtx] = React.useState<{ id: string; card: DeckCardRow } | null>(null)
+
+  const openDetails = React.useCallback((card: DeckCardRow) => {
+    setDetailsCtx({ id: card.id, card })
+    setDetailsOpen(true)
+  }, [])
+
+  const handleModalUpdate = React.useCallback(async (updates: any) => {
+    if (!detailsCtx) return
+    updateCurrentDeck((snapshot) => {
+      const idx = snapshot.cards.findIndex((c) => c.id === detailsCtx.id)
+      if (idx === -1) return snapshot
+      const current = snapshot.cards[idx]
+      const next = { ...current }
+      if (typeof updates.quantity === 'number') next.quantity = Math.max(1, Math.floor(updates.quantity))
+      if (typeof updates.skuId === 'number' || updates.skuId === null) next.skuId = updates.skuId ?? null
+      const nextCards = [...snapshot.cards]
+      nextCards[idx] = next
+      return { ...snapshot, cards: nextCards }
+    })
+  }, [detailsCtx, updateCurrentDeck])
+
+  const handleModalDelete = React.useCallback(async () => {
+    if (!detailsCtx) return
+    updateCurrentDeck((snapshot) => ({ ...snapshot, cards: snapshot.cards.filter((c) => c.id !== detailsCtx.id) }))
+    setDetailsOpen(false)
+  }, [detailsCtx, updateCurrentDeck])
 
   const deckCardsBySection = React.useMemo(() => {
     const map: Record<DeckSection, DeckCardRow[]> = { main: [], sideboard: [], extra: [] }
@@ -1202,7 +1315,8 @@ function DecksPageImpl() {
                               const key = String(card.productId)
                               const info = productInfo[key]
                               const imageUrl = card.imageUrl ?? info?.imageUrl ?? fallbackImage(card.productId)
-                              const name = card.name ?? info?.name ?? `#${card.productId}`
+                              const name = info?.name ?? card.name ?? `#${card.productId}`
+                              const setName = info?.setName
                               const holdingsQuantity = card.holdingsQuantity ?? 0
                               const owned = Math.min(card.quantity, holdingsQuantity)
                               const missing = Math.max(0, card.quantity - holdingsQuantity)
@@ -1215,16 +1329,31 @@ function DecksPageImpl() {
                                 <TableRow key={card.id}>
                                   <TableCell>
                                     <div className="flex items-center gap-3">
-                                      <div className="h-14 w-10 overflow-hidden rounded border bg-muted">
+                                      <button
+                                        type="button"
+                                        onClick={() => openDetails(card)}
+                                        className="h-14 w-10 overflow-hidden rounded border bg-muted focus:outline-none focus:ring-2 focus:ring-primary"
+                                        aria-label="View card details"
+                                      >
                                         <img
                                           src={imageUrl}
                                           alt={name}
                                           className="h-full w-full object-cover"
                                         />
-                                      </div>
+                                      </button>
                                       <div className="space-y-1">
-                                        <div className="text-sm font-medium leading-tight">{name}</div>
-                                        <div className="text-xs text-muted-foreground">#{card.productId}</div>
+                                        <button type="button" onClick={() => openDetails(card)} className="text-left">
+                                          <div className="text-sm font-medium leading-tight hover:underline">{name}</div>
+                                          {setName ? (
+                                            <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: info?.setColor || 'var(--muted-foreground)' }} />
+                                              {setName}
+                                              {info?.setAbbr && (
+                                                <span className="uppercase opacity-70">({info.setAbbr})</span>
+                                              )}
+                                            </div>
+                                          ) : null}
+                                        </button>
                                       </div>
                                     </div>
                                   </TableCell>
@@ -1297,151 +1426,6 @@ function DecksPageImpl() {
           </Card>
 
           <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5" />
-                  Deck Assistant
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Use AI insights on the deck page and quickly fill the main deck from your collection.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Link href={currentDeckId ? `/dashboard/decks/${currentDeckId}` : `#`}>
-                  <Button disabled={!currentDeckId} variant="outline">
-                    Open AI Analysis
-                  </Button>
-                </Link>
-                <Button onClick={handleQuickFillFromCollection} variant="default">
-                  Quick Fill from Collection
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end mb-4">
-                <div className="flex-1">
-                  <label className="text-sm font-medium text-muted-foreground">Goal / Archetype</label>
-                  <Input value={aiGoal} onChange={(e) => setAiGoal(e.target.value)} placeholder="e.g., Mono-Red Aggro" />
-                </div>
-                {selectedTcg === 'mtg' && (currentDeck.format || '').toLowerCase() === 'commander' && (
-                  <div className="flex-1">
-                    <label className="text-sm font-medium text-muted-foreground">Commander (optional)</label>
-                    <Input value={aiCommander} onChange={(e) => setAiCommander(e.target.value)} placeholder="e.g., Atraxa, Praetors' Voice" />
-                  </div>
-                )}
-                <Button onClick={handleAiBuild} disabled={aiBusy}>
-                  {aiBusy ? (
-                    <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Building...</span>
-                  ) : (
-                    <span className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Build with AI</span>
-                  )}
-                </Button>
-              </div>
-              <div className="flex items-center gap-2 mb-4 text-sm">
-                <Switch checked={aiEnforce} onCheckedChange={setAiEnforce} id="enforce-legality" />
-                <label htmlFor="enforce-legality" className="text-muted-foreground">Enforce format legality and construction rules</label>
-              </div>
-              {aiError && (
-                <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive mb-4">{aiError}</div>
-              )}
-              {aiPlan && (
-                <div className="rounded-md border p-3 text-sm text-muted-foreground mb-4">{aiPlan}</div>
-              )}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">Main Deck</div>
-                  <div className="text-lg font-semibold">{deckStats.bySection.main}</div>
-                </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">Sideboard / Extra</div>
-                  <div className="text-lg font-semibold">{deckStats.bySection.sideboard + deckStats.bySection.extra}</div>
-                </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">Missing Copies</div>
-                  <div className="text-lg font-semibold">{deckStats.missingCopies}</div>
-                </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">Estimated Spend</div>
-                  <div className="text-lg font-semibold">{formatCurrency(deckStats.missingCost)}</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="space-y-6">
-          <Card>
-            <CardHeader className="space-y-2">
-              <CardTitle>Your Collection</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Build from cards you already own. Select a card to move it into the active deck section.
-              </p>
-              <Input
-                value={holdingsSearch}
-                onChange={(event) => setHoldingsSearch(event.target.value)}
-                placeholder="Search holdings by name or product ID"
-              />
-            </CardHeader>
-            <CardContent>
-              {holdingsDisplay.length === 0 ? (
-                <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-                  No matching cards in your collection for this game yet.
-                </div>
-              ) : (
-                <ScrollArea className="h-[400px] pr-4">
-                  <div className="space-y-3">
-                    {holdingsDisplay.map((holding) => {
-                      const key = String(holding.productId)
-                      const info = productInfo[key]
-                      const name = info?.name ?? `#${holding.productId}`
-                      const imageUrl = info?.imageUrl ?? fallbackImage(holding.productId)
-                      const marketPrice =
-                        typeof holding.marketPrice === "number"
-                          ? holding.marketPrice
-                          : priceMap[key]
-                      return (
-                        <div
-                          key={`${holding.productId}:${holding.skuId ?? "_"}`}
-                          className="flex items-center gap-3 rounded-md border p-3"
-                        >
-                          <div className="h-14 w-10 overflow-hidden rounded bg-muted">
-                            <img
-                              src={imageUrl}
-                              alt={name}
-                              className="h-full w-full object-cover"
-                            />
-                          </div>
-                          <div className="flex-1 space-y-1">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <div className="text-sm font-medium">{name}</div>
-                                <div className="text-xs text-muted-foreground">#{holding.productId}</div>
-                              </div>
-                              <Badge variant="secondary">x{holding.quantity}</Badge>
-                            </div>
-                            <div className="flex items-center justify-between text-xs text-muted-foreground">
-                              <span>{holding.collection || "Collection"}</span>
-                              <span>{
-                                typeof marketPrice === "number"
-                                  ? formatCurrency(marketPrice)
-                                  : ""
-                              }</span>
-                            </div>
-                          </div>
-                          <Button size="sm" onClick={() => handleAddFromHolding(holding)}>
-                            Add
-                          </Button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
             <CardHeader className="space-y-2">
               <CardTitle>Search Catalog</CardTitle>
               <p className="text-sm text-muted-foreground">
@@ -1476,6 +1460,7 @@ function DecksPageImpl() {
                       const info = productInfo[key]
                       const name = info?.name ?? result?.name ?? result?.productName ?? `#${productId}`
                       const setName = info?.setName ?? result?.groupName ?? result?.setName
+                      const dot = info?.setColor
                       const imageUrl = info?.imageUrl ?? fallbackImage(productId)
                       return (
                         <div key={key} className="flex items-center gap-3 rounded-md border p-3">
@@ -1489,7 +1474,13 @@ function DecksPageImpl() {
                           <div className="flex-1 space-y-1">
                             <div className="text-sm font-medium">{name}</div>
                             {setName && (
-                              <div className="text-xs text-muted-foreground">{setName}</div>
+                              <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: dot || 'var(--muted-foreground)' }} />
+                                {setName}
+                                {info?.setAbbr && (
+                                  <span className="uppercase opacity-70">({info.setAbbr})</span>
+                                )}
+                              </div>
                             )}
                           </div>
                           <Button size="sm" onClick={() => handleAddFromSearch(result)}>
@@ -1505,6 +1496,26 @@ function DecksPageImpl() {
           </Card>
         </div>
       </div>
+      {/* Details Modal */}
+      <CardDetailsModal
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        card={{
+          ...detailsCtx?.card,
+          name: detailsCtx?.card?.name ?? productInfo[String(detailsCtx?.card?.productId || '')]?.name,
+          imageUrl: detailsCtx?.card?.imageUrl ?? productInfo[String(detailsCtx?.card?.productId || '')]?.imageUrl,
+          setName: productInfo[String(detailsCtx?.card?.productId || '')]?.setName,
+        }}
+        onUpdateCard={async (updates: any) => {
+          await handleModalUpdate(updates)
+        }}
+        onDeleteCard={async () => {
+          await handleModalDelete()
+        }}
+        getProductDetails={async (ids: number[]) => await getProductDetails({ productIds: ids } as any)}
+        getProductPrices={async (ids: number[]) => await getProductPrices({ productIds: ids } as any)}
+        getSkus={async (ids: number[]) => await getSkus({ productIds: ids } as any)}
+      />
     </div>
   )
 }
