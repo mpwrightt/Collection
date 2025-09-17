@@ -243,22 +243,28 @@ export default function DeckAiPage() {
                   <div className="text-sm text-muted-foreground">{result.ai.analysis.summary}</div>
                 </div>
               )}
-              {(result.ai?.analysis?.strengths?.length ?? 0) > 0 && (
+              {(() => {
+                const strengths = Array.isArray(result?.ai?.analysis?.strengths) ? result.ai.analysis.strengths : []
+                return strengths.length > 0 ? (
                 <div>
                   <div className="text-sm font-semibold mb-1">Strengths</div>
                   <ul className="text-sm text-muted-foreground space-y-1">
-                    {result.ai.analysis.strengths.map((s: string, i: number) => <li key={i}>• {s}</li>)}
+                    {strengths.map((s: any, i: number) => <li key={i}>• {String(s)}</li>)}
                   </ul>
                 </div>
-              )}
-              {(result.ai?.analysis?.weaknesses?.length ?? 0) > 0 && (
+                ) : null
+              })()}
+              {(() => {
+                const weaknesses = Array.isArray(result?.ai?.analysis?.weaknesses) ? result.ai.analysis.weaknesses : []
+                return weaknesses.length > 0 ? (
                 <div>
                   <div className="text-sm font-semibold mb-1">Weaknesses</div>
                   <ul className="text-sm text-muted-foreground space-y-1">
-                    {result.ai.analysis.weaknesses.map((s: string, i: number) => <li key={i}>• {s}</li>)}
+                    {weaknesses.map((s: any, i: number) => <li key={i}>• {String(s)}</li>)}
                   </ul>
                 </div>
-              )}
+                ) : null
+              })()}
             </CardContent>
           </Card>
 
@@ -267,11 +273,13 @@ export default function DeckAiPage() {
               <CardTitle>Issues</CardTitle>
             </CardHeader>
             <CardContent>
-              {(result.ai?.issues?.length ?? 0) === 0 ? (
+              {(() => {
+                const issues = Array.isArray(result?.ai?.issues) ? result.ai.issues : []
+                return issues.length === 0 ? (
                 <div className="text-sm text-muted-foreground">No issues reported.</div>
-              ) : (
+                ) : (
                 <div className="space-y-2">
-                  {result.ai.issues.map((issue: any, i: number) => (
+                  {issues.map((issue: any, i: number) => (
                     <div key={i} className="rounded-md border p-3 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="font-medium">{issue.type}</span>
@@ -281,7 +289,8 @@ export default function DeckAiPage() {
                     </div>
                   ))}
                 </div>
-              )}
+                )
+              })()}
             </CardContent>
           </Card>
 
@@ -290,9 +299,11 @@ export default function DeckAiPage() {
               <CardTitle>Suggestions</CardTitle>
             </CardHeader>
             <CardContent>
-              {(result.ai?.suggestions?.length ?? 0) === 0 ? (
+              {(() => {
+                const suggestions = Array.isArray(result?.ai?.suggestions) ? result.ai.suggestions : []
+                return suggestions.length === 0 ? (
                 <div className="text-sm text-muted-foreground">No suggestions available.</div>
-              ) : (
+                ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -302,7 +313,7 @@ export default function DeckAiPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {result.ai.suggestions.map((s: any, i: number) => (
+                    {suggestions.map((s: any, i: number) => (
                       <TableRow key={i}>
                         <TableCell className="font-medium">{s.change}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{s.rationale}</TableCell>
@@ -319,7 +330,8 @@ export default function DeckAiPage() {
                     ))}
                   </TableBody>
                 </Table>
-              )}
+                )
+              })()}
             </CardContent>
           </Card>
 

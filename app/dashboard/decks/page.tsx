@@ -744,6 +744,8 @@ function DecksPageImpl() {
   const [aiBusy, setAiBusy] = React.useState(false)
   const [aiPlan, setAiPlan] = React.useState<string | null>(null)
   const [aiError, setAiError] = React.useState<string | null>(null)
+  const [aiEnforce, setAiEnforce] = React.useState(true)
+  const [aiCommander, setAiCommander] = React.useState("")
 
   const handleSaveDeck = React.useCallback(async () => {
     setSaving(true)
@@ -943,12 +945,17 @@ function DecksPageImpl() {
         return { name, quantity: Number(h.quantity ?? 0) }
       })
 
-      const target = getTargetMainSize()
+      // Determine target size; for MTG Commander target 100
+      let target = getTargetMainSize()
+      if (selectedTcg === 'mtg' && (currentDeck.format || '').toLowerCase() === 'commander') {
+        target = 100
+      }
       const result = await buildDeck({
         tcg: selectedTcg,
         format: currentDeck.format ?? undefined,
-        goal: aiGoal || undefined,
+        goal: (aiGoal || aiCommander) ? `${aiGoal}${aiCommander ? ` | Commander: ${aiCommander}` : ''}` : undefined,
         targetMainSize: target,
+        enforceRules: aiEnforce,
         holdings: ownedByName,
       } as any)
 
@@ -1280,6 +1287,12 @@ function DecksPageImpl() {
                   <label className="text-sm font-medium text-muted-foreground">Goal / Archetype</label>
                   <Input value={aiGoal} onChange={(e) => setAiGoal(e.target.value)} placeholder="e.g., Mono-Red Aggro" />
                 </div>
+                {selectedTcg === 'mtg' && (currentDeck.format || '').toLowerCase() === 'commander' && (
+                  <div className="flex-1">
+                    <label className="text-sm font-medium text-muted-foreground">Commander (optional)</label>
+                    <Input value={aiCommander} onChange={(e) => setAiCommander(e.target.value)} placeholder="e.g., Atraxa, Praetors' Voice" />
+                  </div>
+                )}
                 <Button onClick={handleAiBuild} disabled={aiBusy}>
                   {aiBusy ? (
                     <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Building...</span>
@@ -1287,6 +1300,10 @@ function DecksPageImpl() {
                     <span className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Build with AI</span>
                   )}
                 </Button>
+              </div>
+              <div className="flex items-center gap-2 mb-4 text-sm">
+                <Switch checked={aiEnforce} onCheckedChange={setAiEnforce} id="enforce-legality" />
+                <label htmlFor="enforce-legality" className="text-muted-foreground">Enforce format legality and construction rules</label>
               </div>
               {aiError && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive mb-4">{aiError}</div>

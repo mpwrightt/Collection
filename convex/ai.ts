@@ -148,6 +148,7 @@ export const buildDeck = action({
     format: v.optional(v.string()),
     goal: v.optional(v.string()), // e.g., archetype or style like "Mono-Red Aggro"
     targetMainSize: v.optional(v.number()), // default 60 (MTG/Pokemon) or 40 (YGO)
+    enforceRules: v.optional(v.boolean()), // if true, apply format legality and construction rules
     // Provide owned card names with rough quantities to bias selection
     holdings: v.optional(
       v.array(
@@ -158,7 +159,7 @@ export const buildDeck = action({
       )
     ),
   },
-  handler: async (ctx, { tcg, format, goal, targetMainSize, holdings }) => {
+  handler: async (ctx, { tcg, format, goal, targetMainSize, enforceRules, holdings }) => {
     "use node";
 
     const apiKey = process.env.GOOGLE_API_KEY;
@@ -166,6 +167,37 @@ export const buildDeck = action({
     if (!apiKey) throw new Error("Missing GOOGLE_API_KEY environment variable.");
 
     const size = typeof targetMainSize === "number" && targetMainSize > 0 ? targetMainSize : (tcg === "ygo" ? 40 : 60)
+
+    // Build format-specific rule text
+    let ruleText = ''
+    if (enforceRules) {
+      if (tcg === 'mtg') {
+        if ((format || '').toLowerCase() === 'commander') {
+          ruleText = `Commander rules (EDH):
+          - 100-card singleton deck (exactly 100 cards total).
+          - Exactly one commander (legendary creature or designated card); include it with quantity 1.
+          - No duplicate non-basic cards (singleton), basic lands can repeat.
+          - All nonland cards must obey color identity of the commander.
+          - Use only cards legal in Commander (avoid banned list).`
+        } else {
+          ruleText = `Constructed MTG rules:
+          - Main deck target size ~${size} (60 typical) unless the format dictates otherwise.
+          - Up to 4 copies of a given non-basic card across main+sideboard.
+          - Use only cards legal in ${format ?? 'the selected'} format (avoid banned/restricted).`
+        }
+      } else if (tcg === 'pokemon') {
+        ruleText = `Pokemon TCG rules:
+        - 60 cards main deck.
+        - Up to 4 copies of the same named card, except basic energy cards can exceed 4.
+        - Use only cards legal in ${format ?? 'the selected'} format.`
+      } else if (tcg === 'ygo') {
+        ruleText = `Yu-Gi-Oh! rules:
+        - Main deck target 40 cards (40–60 allowed).
+        - Up to 3 copies of a card (respect Forbidden/Limited list).
+        - Use Extra/Side if suggested by the archetype; keep within legal sizes.
+        - Use only cards legal in ${format ?? 'the selected'} format.`
+      }
+    }
 
     const system = `You are an expert deck building assistant for trading card games.
 Return STRICT JSON:
@@ -179,6 +211,7 @@ Rules:
 - Target approximately ${size} cards in the main deck (ignore sideboard/extra if not applicable).
 - Do not include card names that are fictional or non-existent.
 - Keep the JSON valid with no extra commentary.`
+    + (ruleText ? `\n Format-Specific Rules:\n${ruleText}` : '')
 
     const payload = {
       tcg,
