@@ -38,7 +38,7 @@ export function SetTargetDialog({ collectionId, collectionName, trigger }: SetTa
   const [isLoading, setIsLoading] = React.useState(false)
 
   // Queries
-  const sets = useQuery(api.sets.listSets) ?? []
+  const sets = useQuery(api.sets.listSets, {}) ?? []
   const existingTarget = useQuery(api.sets.getUserCollectionTargets, {
     collectionId: collectionId as any
   })
