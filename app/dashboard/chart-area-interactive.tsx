@@ -32,18 +32,11 @@ import {
   ToggleGroupItem,
 } from "@/components/ui/toggle-group"
 
-export const description = "Cards added over time"
+export const description = "Portfolio value over time"
 
 const chartConfig = {
-  visitors: {
-    label: "Visitors",
-  },
-  desktop: {
-    label: "Desktop",
-    color: "var(--primary)",
-  },
-  mobile: {
-    label: "Mobile",
+  value: {
+    label: "Portfolio Value",
     color: "var(--primary)",
   },
 } satisfies ChartConfig
@@ -53,7 +46,7 @@ export function ChartAreaInteractive() {
   const [timeRange, setTimeRange] = React.useState("90d")
 
   const rangeDays = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90
-  const series = useQuery(api.dashboard.getItemsTimeSeries, { rangeDays }) || []
+  const series = useQuery(api.dashboard.getPortfolioValueTimeSeries, { rangeDays }) || []
 
   React.useEffect(() => {
     if (isMobile) {
@@ -61,17 +54,20 @@ export function ChartAreaInteractive() {
     }
   }, [isMobile])
 
-  const filteredData = series.map((d) => ({ date: d.date, desktop: d.added, mobile: d.added }))
+  const filteredData = series.map((d) => ({
+    date: d.date,
+    value: d.value
+  }))
 
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle>Cards Added</CardTitle>
+        <CardTitle>Portfolio Value</CardTitle>
         <CardDescription>
           <span className="hidden @[540px]/card:block">
-            Total for selected range
+            Collection value over time
           </span>
-          <span className="@[540px]/card:hidden">Selected range</span>
+          <span className="@[540px]/card:hidden">Value over time</span>
         </CardDescription>
         <CardAction>
           <ToggleGroup
@@ -114,27 +110,15 @@ export function ChartAreaInteractive() {
         >
           <AreaChart data={filteredData}>
             <defs>
-              <linearGradient id="fillDesktop" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id="fillValue" x1="0" y1="0" x2="0" y2="1">
                 <stop
                   offset="5%"
-                  stopColor="var(--color-desktop)"
-                  stopOpacity={1.0}
-                />
-                <stop
-                  offset="95%"
-                  stopColor="var(--color-desktop)"
-                  stopOpacity={0.1}
-                />
-              </linearGradient>
-              <linearGradient id="fillMobile" x1="0" y1="0" x2="0" y2="1">
-                <stop
-                  offset="5%"
-                  stopColor="var(--color-mobile)"
+                  stopColor="var(--color-value)"
                   stopOpacity={0.8}
                 />
                 <stop
                   offset="95%"
-                  stopColor="var(--color-mobile)"
+                  stopColor="var(--color-value)"
                   stopOpacity={0.1}
                 />
               </linearGradient>
@@ -165,23 +149,24 @@ export function ChartAreaInteractive() {
                       day: "numeric",
                     })
                   }}
+                  formatter={(value) => {
+                    return [
+                      new Intl.NumberFormat("en-US", {
+                        style: "currency",
+                        currency: "USD",
+                      }).format(value as number),
+                      "Portfolio Value"
+                    ]
+                  }}
                   indicator="dot"
                 />
               }
             />
             <Area
-              dataKey="mobile"
+              dataKey="value"
               type="natural"
-              fill="url(#fillMobile)"
-              stroke="var(--color-mobile)"
-              stackId="a"
-            />
-            <Area
-              dataKey="desktop"
-              type="natural"
-              fill="url(#fillDesktop)"
-              stroke="var(--color-desktop)"
-              stackId="a"
+              fill="url(#fillValue)"
+              stroke="var(--color-value)"
             />
           </AreaChart>
         </ChartContainer>

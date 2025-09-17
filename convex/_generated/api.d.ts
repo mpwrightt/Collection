@@ -17,6 +17,7 @@ import type * as ai from "../ai.js";
 import type * as collections from "../collections.js";
 import type * as dashboard from "../dashboard.js";
 import type * as debug from "../debug.js";
+import type * as decks from "../decks.js";
 import type * as http from "../http.js";
 import type * as paymentAttemptTypes from "../paymentAttemptTypes.js";
 import type * as paymentAttempts from "../paymentAttempts.js";
@@ -38,6 +39,7 @@ declare const fullApi: ApiFromModules<{
   collections: typeof collections;
   dashboard: typeof dashboard;
   debug: typeof debug;
+  decks: typeof decks;
   http: typeof http;
   paymentAttemptTypes: typeof paymentAttemptTypes;
   paymentAttempts: typeof paymentAttempts;

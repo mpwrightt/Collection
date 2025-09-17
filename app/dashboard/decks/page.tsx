@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useAction, useQuery } from "convex/react"
+import { useAction, useQuery, useMutation } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,7 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Sparkles, Plus, Minus, Trash2, Search, Loader2, Filter, ShoppingCart } from "lucide-react"
+import { Sparkles, Plus, Minus, Trash2, Search, Loader2, Filter, ShoppingCart, Save } from "lucide-react"
+import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 
 type DeckSection = "main" | "sideboard" | "extra"
 
@@ -203,6 +205,8 @@ type AnalysisState = {
 }
 
 export default function DecksPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [selectedTcg, setSelectedTcg] = React.useState<string>(TCG_OPTIONS[0]?.value ?? "mtg")
   const [deckSnapshots, setDeckSnapshots] = React.useState<Record<string, DeckSnapshot>>(() => {
     const initial: Record<string, DeckSnapshot> = {}
@@ -211,6 +215,17 @@ export default function DecksPage() {
     }
     return initial
   })
+
+  const saveDeckMutation = useMutation(api.decks.saveDeck)
+  const deleteDeckMutation = useMutation(api.decks.deleteDeck)
+  const [currentDeckId, setCurrentDeckId] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    const id = searchParams?.get("deck")
+    if (id && id !== currentDeckId) setCurrentDeckId(id)
+  }, [searchParams, currentDeckId])
+
+  const loadedDeck = useQuery(api.decks.getDeck, currentDeckId ? ({ deckId: currentDeckId } as any) : "skip") as any
 
   const analyzeDeck = useAction(api.ai.analyzeDeck)
   const getProductDetails = useAction(api.tcg.getProductDetails)
@@ -231,6 +246,38 @@ export default function DecksPage() {
 
   const currentDeck = deckSnapshots[selectedTcg] ?? createSnapshotForTcg(selectedTcg)
   const deckCards = currentDeck.cards
+
+  // Apply loaded deck data when present
+  React.useEffect(() => {
+    if (!loadedDeck?.deck) return
+    const tcg = loadedDeck.deck.tcg as string
+    setSelectedTcg(tcg)
+    setDeckSnapshots((prev) => {
+      const next = { ...prev }
+      const mapped = (loadedDeck.cards || []).map((c: any) => {
+        const section = (c.section as DeckSection) || "main"
+        return {
+          id: deckKey(Number(c.productId), c.skuId ?? null, section),
+          productId: Number(c.productId),
+          skuId: typeof c.skuId === "number" ? c.skuId : null,
+          section,
+          quantity: Number(c.quantity ?? 0),
+          holdingsQuantity: 0,
+          name: `#${c.productId}`,
+          imageUrl: fallbackImage(Number(c.productId)),
+          url: `https://www.tcgplayer.com/product/${Number(c.productId)}`,
+          categoryId: (c.categoryId ?? TCG_OPTIONS.find((o) => o.value === tcg)?.categoryId ?? null) as number | null,
+          marketPrice: undefined,
+        } as DeckCardRow
+      })
+      next[tcg] = {
+        name: loadedDeck.deck.name || "Untitled Deck",
+        format: loadedDeck.deck.formatCode ?? null,
+        cards: mapped,
+      }
+      return next
+    })
+  }, [loadedDeck])
 
   const [activeSection, setActiveSection] = React.useState<DeckSection>("main")
   const allowedSections = currentTcgOption?.sections ?? ["main", "sideboard"]
@@ -414,6 +461,40 @@ export default function DecksPage() {
       return { ...snapshot, cards: nextCards }
     })
   }, [holdingsMemo, updateCurrentDeck])
+
+  // Ensure product details for cards currently in the deck (for loaded decks or manual entry)
+  React.useEffect(() => {
+    const missing = Array.from(new Set(
+      deckCards
+        .map((c) => c.productId)
+        .filter((pid) => !productInfo[String(pid)])
+    ))
+    if (missing.length === 0) return
+    let cancelled = false
+    const run = async () => {
+      try {
+        for (let i = 0; i < missing.length; i += 25) {
+          const chunk = missing.slice(i, i + 25)
+          const payload = await getProductDetails({ productIds: chunk })
+          const parsed = parseProductDetails(payload)
+          if (cancelled) return
+          if (parsed.length > 0) {
+            setProductInfo((prev) => {
+              const next = { ...prev }
+              for (const { productId, info } of parsed) {
+                next[String(productId)] = info
+              }
+              return next
+            })
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to fetch details for deck cards', e)
+      }
+    }
+    run()
+    return () => { cancelled = true }
+  }, [deckCards, productInfo, getProductDetails])
 
   const [searchQuery, setSearchQuery] = React.useState("")
   const [searchResults, setSearchResults] = React.useState<any[]>([])
@@ -654,6 +735,60 @@ export default function DecksPage() {
   })
   const [analysisBusy, setAnalysisBusy] = React.useState(false)
 
+  const [saving, setSaving] = React.useState(false)
+  const [deleting, setDeleting] = React.useState(false)
+
+  const handleSaveDeck = React.useCallback(async () => {
+    setSaving(true)
+    try {
+      const payloadCards = deckCards.map((card) => ({
+        categoryId: Number(card.categoryId ?? currentTcgOption?.categoryId ?? 0),
+        productId: Number(card.productId),
+        skuId: typeof card.skuId === "number" ? card.skuId : undefined,
+        quantity: Number(card.quantity ?? 0),
+        section: card.section,
+      }))
+      const id = await saveDeckMutation({
+        deckId: currentDeckId ? (currentDeckId as any) : undefined,
+        name: currentDeck.name || "Untitled Deck",
+        tcg: selectedTcg,
+        formatCode: currentDeck.format ?? undefined,
+        notes: undefined,
+        cards: payloadCards,
+      } as any)
+      const savedId = String(id)
+      setCurrentDeckId(savedId)
+      router.replace(`/dashboard/decks?deck=${savedId}`)
+    } catch (error) {
+      console.error("Save deck failed:", error)
+    } finally {
+      setSaving(false)
+    }
+  }, [deckCards, currentDeck, selectedTcg, currentDeckId, currentTcgOption, saveDeckMutation, router])
+
+  const handleNewDeck = React.useCallback(() => {
+    setCurrentDeckId(null)
+    setDeckSnapshots((prev) => ({ ...prev, [selectedTcg]: createSnapshotForTcg(selectedTcg) }))
+    router.replace(`/dashboard/decks`)
+  }, [selectedTcg, router])
+
+  const handleDeleteDeck = React.useCallback(async () => {
+    if (!currentDeckId) return
+    const ok = typeof window !== "undefined" ? window.confirm("Delete this deck? This cannot be undone.") : true
+    if (!ok) return
+    setDeleting(true)
+    try {
+      await deleteDeckMutation({ deckId: currentDeckId as any } as any)
+      setCurrentDeckId(null)
+      setDeckSnapshots((prev) => ({ ...prev, [selectedTcg]: createSnapshotForTcg(selectedTcg) }))
+      router.push("/dashboard/decks/saved")
+    } catch (error) {
+      console.error("Delete deck failed:", error)
+    } finally {
+      setDeleting(false)
+    }
+  }, [currentDeckId, deleteDeckMutation, selectedTcg, router])
+
   const handleAnalyzeDeck = React.useCallback(async () => {
     if (deckCards.length === 0) {
       setAnalysisState({ result: null, deckHash: null, error: "Add cards to analyze the deck." })
@@ -703,7 +838,29 @@ export default function DecksPage() {
     <div className="px-4 lg:px-6 space-y-6">
       <Card>
         <CardHeader className="space-y-4">
-          <CardTitle>Deck Builder</CardTitle>
+          <div className="flex items-center gap-3">
+            <CardTitle className="flex-1">Deck Builder</CardTitle>
+            <Link href="/dashboard/decks/saved">
+              <Button variant="outline">My Decks</Button>
+            </Link>
+            <Button variant="outline" onClick={handleNewDeck} disabled={saving || deleting}>
+              New
+            </Button>
+            <Button onClick={handleSaveDeck} disabled={saving}>
+              {saving ? (
+                <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Saving...</span>
+              ) : (
+                <span className="flex items-center gap-2"><Save className="h-4 w-4" /> Save Deck</span>
+              )}
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteDeck} disabled={!currentDeckId || deleting}>
+              {deleting ? (
+                <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Deleting...</span>
+              ) : (
+                <span className="flex items-center gap-2"><Trash2 className="h-4 w-4" /> Delete</span>
+              )}
+            </Button>
+          </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="space-y-2">
               <label className="text-sm font-medium text-muted-foreground">Deck Name</label>

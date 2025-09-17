@@ -58,6 +58,11 @@ const data = {
       url: "/dashboard/decks",
       icon: IconFileAi,
     },
+    {
+      title: "My Decks",
+      url: "/dashboard/decks/saved",
+      icon: IconListDetails,
+    },
   ],
   navSecondary: [
     {

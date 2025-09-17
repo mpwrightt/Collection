@@ -77,6 +77,74 @@ export const getItemsTimeSeries = query({
   },
 });
 
+export const getPortfolioValueTimeSeries = query({
+  args: { rangeDays: v.number() },
+  handler: async (ctx, { rangeDays }) => {
+    const user = await getCurrentUser(ctx);
+    if (!user) return [] as { date: string; value: number }[];
+
+    const now = Date.now();
+    const start = now - rangeDays * 24 * 60 * 60 * 1000;
+
+    // Get all items for this user
+    const items = await ctx.db
+      .query("collectionItems")
+      .withIndex("byUserId", (q) => q.eq("userId", user._id))
+      .collect();
+
+    // Pre-fetch pricing data for all products
+    const productIds = [...new Set(items.map(it => it.productId))];
+    const priceMap = new Map<number, number>();
+
+    await Promise.all(productIds.map(async (productId) => {
+      const price = await ctx.db
+        .query("pricingCache")
+        .withIndex("byProductId", q => q.eq("productId", productId))
+        .unique();
+
+      let market = 0;
+      if (price?.data) {
+        if (typeof (price as any).data?.marketPrice === 'number') {
+          market = (price as any).data.marketPrice;
+        } else if (Array.isArray((price as any).data?.results) && (price as any).data.results[0]?.marketPrice) {
+          market = Number((price as any).data.results[0].marketPrice) || 0;
+        } else if (Array.isArray((price as any).data?.Results) && (price as any).data.Results[0]?.marketPrice) {
+          market = Number((price as any).data.Results[0].marketPrice) || 0;
+        }
+      }
+      priceMap.set(productId, market);
+    }));
+
+    // Calculate cumulative portfolio value for each day
+    const out: { date: string; value: number }[] = [];
+
+    for (
+      let d = new Date(new Date(start).toDateString());
+      d <= new Date(now);
+      d.setDate(d.getDate() + 1)
+    ) {
+      const currentDate = new Date(d);
+      const currentTimestamp = currentDate.getTime();
+
+      // Calculate total portfolio value up to this date
+      let totalValue = 0;
+      for (const item of items) {
+        const itemTime = item.createdAt ?? item._creationTime;
+        // Only include items that were added on or before this date
+        if (itemTime <= currentTimestamp) {
+          const marketPrice = priceMap.get(item.productId) || 0;
+          totalValue += (item.quantity ?? 0) * marketPrice;
+        }
+      }
+
+      const day = currentDate.toISOString().slice(0, 10);
+      out.push({ date: day, value: totalValue });
+    }
+
+    return out;
+  },
+});
+
 export const getHoldings = query({
   args: { limit: v.optional(v.number()), offset: v.optional(v.number()) },
   handler: async (ctx, { limit = 20, offset = 0 }) => {
