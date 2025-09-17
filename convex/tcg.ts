@@ -13,6 +13,41 @@ export const getTokenRecord = internalQuery({
   },
 });
 
+// List ALL products for a given group (set) by paging through results
+export const listGroupProducts = action({
+  args: { groupId: v.number() },
+  handler: async (ctx, { groupId }) => {
+    'use node';
+    const svc = getPythonServiceUrl();
+    const out: any[] = [];
+    let offset = 0;
+    const limit = 200;
+    while (true) {
+      let page: any;
+      if (svc) {
+        const url = `${svc}/products?groupId=${groupId}&limit=${limit}&offset=${offset}`;
+        page = await fetchJson(url, { method: 'GET' });
+      } else {
+        const clientId = process.env.TCGPLAYER_CLIENT_ID!;
+        const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
+        const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
+        if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
+        await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+        const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
+        const url = apiBase(version, `catalog/products?groupId=${groupId}&limit=${limit}&offset=${offset}`);
+        page = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
+      }
+      const list = page?.results || page?.Results || page?.data || [];
+      out.push(...list);
+      if (!list.length || list.length < limit) break;
+      offset += limit;
+      // small pacing between pages to avoid bursts
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return { Success: true, Results: out };
+  }
+});
+
 // Get group (set) details by IDs
 export const getGroupsByIds = action({
   args: { groupIds: v.array(v.number()) },

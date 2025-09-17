@@ -80,6 +80,9 @@ export default defineSchema({
     completionPercentage: v.number(),
     missingCards: v.number(),
     setName: v.optional(v.string()),
+    setAbbreviation: v.optional(v.string()),
+    targetCardCount: v.optional(v.number()),
+    ownedTargetCards: v.optional(v.number()),
     latestItemUpdatedAt: v.number(),
     updatedAt: v.number(),
   })

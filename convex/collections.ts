@@ -11,6 +11,9 @@ type CollectionSummaryData = {
   completionPercentage: number
   missingCards: number
   setName: string | null
+  setAbbreviation: string | null
+  targetCardCount: number
+  ownedTargetCards: number
   latestItemUpdatedAt: number
   updatedAt: number
 }
@@ -136,6 +139,9 @@ async function computeCollectionSummaryInternal(
   let completionPercentage = 0
   let missingCards = 0
   let setName: string | null = null
+  let setAbbreviation: string | null = null
+  let targetCardCount = 0
+  let ownedTargetCards = 0
 
   const target = await ctx.db
     .query("collectionTargets")
@@ -150,6 +156,7 @@ async function computeCollectionSummaryInternal(
 
     if (set) {
       setName = set.name ?? null
+      setAbbreviation = set.abbreviation ?? null
 
       const setCards = await ctx.db
         .query("setCards")
@@ -178,12 +185,81 @@ async function computeCollectionSummaryInternal(
       }
 
       const targetCards = setCards.filter((card: any) => targetCardNumbers.includes(card.cardNumber))
-      const ownedTargetCards = targetCards.filter((card: any) => ownedProductIds.has(card.productId))
+      const ownedTargetCardsList = targetCards.filter((card: any) => ownedProductIds.has(card.productId))
 
-      completionPercentage = targetCards.length > 0 ? (ownedTargetCards.length / targetCards.length) * 100 : 0
-      missingCards = Math.max(0, targetCards.length - ownedTargetCards.length)
+      targetCardCount = targetCards.length
+      ownedTargetCards = ownedTargetCardsList.length
+      completionPercentage = targetCardCount > 0 ? (ownedTargetCards / targetCardCount) * 100 : 0
+      missingCards = Math.max(0, targetCardCount - ownedTargetCards)
+    }
+  } else {
+    const productIds = Array.from(new Set(mine.map((item: any) => Number(item.productId)).filter((n: number) => Number.isFinite(n) && n > 0)))
+    if (productIds.length > 0) {
+      const productSetEntries: Array<{ productId: number; setIds: string[] }> = await Promise.all(productIds.map(async (productId) => {
+        const entries = await ctx.db
+          .query("setCards")
+          .withIndex("byProductId", (q: any) => q.eq("productId", productId))
+          .collect()
+        const setIds = Array.from(new Set(
+          entries
+            .map((entry: any) => String(entry.setId ?? ''))
+            .filter((sid: string) => sid.length > 0)
+        )) as string[]
+        return { productId: Number(productId), setIds }
+      }))
+
+      const setOwnership = new Map<string, Set<number>>()
+      for (const { productId, setIds } of productSetEntries) {
+        for (const sid of setIds as string[]) {
+          if (!setOwnership.has(sid)) {
+            setOwnership.set(sid, new Set())
+          }
+          setOwnership.get(sid)!.add(productId)
+        }
+      }
+
+      let dominant: { setId: string; owned: Set<number> } | null = null
+      for (const [sid, ownedSet] of setOwnership.entries()) {
+        if (ownedSet.size === 0) continue
+        if (!dominant || ownedSet.size > dominant.owned.size) {
+          dominant = { setId: sid, owned: ownedSet }
+        }
+      }
+
+      if (dominant) {
+        const set = await ctx.db
+          .query("sets")
+          .withIndex("bySetId", (q: any) => q.eq("setId", dominant.setId))
+          .first()
+
+        if (set) {
+          setName = set.name ?? null
+          setAbbreviation = set.abbreviation ?? null
+          targetCardCount = typeof set.totalCards === "number" ? set.totalCards : 0
+        }
+
+        if (targetCardCount <= 0) {
+          const cardsInSet = await ctx.db
+            .query("setCards")
+            .withIndex("bySetId", (q: any) => q.eq("setId", dominant.setId))
+            .collect()
+          targetCardCount = cardsInSet.length
+        }
+
+        ownedTargetCards = dominant.owned.size
+        if (targetCardCount > 0) {
+          completionPercentage = (ownedTargetCards / targetCardCount) * 100
+          missingCards = Math.max(0, targetCardCount - ownedTargetCards)
+        }
+      }
     }
   }
+
+  if (!Number.isFinite(completionPercentage)) completionPercentage = 0
+  completionPercentage = Math.min(100, Math.max(0, completionPercentage))
+  if (!Number.isFinite(missingCards) || missingCards < 0) missingCards = 0
+  if (!Number.isFinite(targetCardCount) || targetCardCount < 0) targetCardCount = 0
+  if (!Number.isFinite(ownedTargetCards) || ownedTargetCards < 0) ownedTargetCards = 0
 
   const averageValue = totalQuantity > 0 ? estimatedValue / totalQuantity : 0
 
@@ -195,6 +271,9 @@ async function computeCollectionSummaryInternal(
     completionPercentage,
     missingCards,
     setName,
+    setAbbreviation,
+    targetCardCount,
+    ownedTargetCards,
     latestItemUpdatedAt,
     updatedAt: Date.now(),
   }
@@ -422,6 +501,162 @@ export const refreshAllPricesAndSummaries = action({
       return { collections: collections.length, items: 0, backfilled: 0, pricedSkus: 0 }
     }
 
+    // Fetch product metadata to understand set/group membership
+    const productInfo = new Map<number, { groupId?: number; groupName?: string; abbreviation?: string }>()
+    const missingGroupMeta = new Set<number>()
+    const PRODUCT_CHUNK = 40
+    for (let i = 0; i < productIds.length; i += PRODUCT_CHUNK) {
+      const chunk = productIds.slice(i, i + PRODUCT_CHUNK)
+      try {
+        const resp: any = await ctx.runAction(api.tcg.getProductDetails, { productIds: chunk })
+        const list: any[] = resp?.results || resp?.Results || resp?.data || []
+        for (const entry of list) {
+          const pid = Number(entry?.productId ?? entry?.ProductId ?? entry?.product?.productId)
+          if (!Number.isFinite(pid) || pid <= 0) continue
+          const groupId = Number(entry?.groupId ?? entry?.GroupId ?? entry?.product?.groupId)
+          const groupName = entry?.groupName ?? entry?.product?.groupName
+          const abbreviation = entry?.abbreviation ?? entry?.product?.groupAbbreviation ?? entry?.code
+          productInfo.set(pid, {
+            groupId: Number.isFinite(groupId) && groupId > 0 ? groupId : undefined,
+            groupName: typeof groupName === 'string' ? groupName : undefined,
+            abbreviation: typeof abbreviation === 'string' ? abbreviation : undefined,
+          })
+          if (Number.isFinite(groupId) && groupId > 0 && (!groupName || !abbreviation)) {
+            missingGroupMeta.add(Number(groupId))
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to fetch product details chunk', error)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+
+    const groupMeta = new Map<number, { name?: string; abbreviation?: string }>()
+    if (missingGroupMeta.size > 0) {
+      try {
+        const resp: any = await ctx.runAction(api.tcg.getGroupsByIds, { groupIds: Array.from(missingGroupMeta) })
+        const list: any[] = resp?.results || resp?.Results || resp?.data || []
+        for (const group of list) {
+          const gid = Number(group?.groupId ?? group?.GroupId)
+          if (!Number.isFinite(gid) || gid <= 0) continue
+          const name = group?.name ?? group?.groupName
+          const abbr = group?.abbreviation ?? group?.code
+          groupMeta.set(gid, {
+            name: typeof name === 'string' ? name : undefined,
+            abbreviation: typeof abbr === 'string' ? abbr : undefined,
+          })
+        }
+      } catch (error) {
+        console.warn('Failed to fetch group metadata', error)
+      }
+    }
+
+    // Build ownership map per collection -> groupId -> owned product ids
+    const collectionGroupOwnership = new Map<string, Map<number, Set<number>>>()
+    for (const item of items) {
+      if (!item.collectionId) continue
+      const pid = Number(item.productId)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      const info = productInfo.get(pid)
+      const groupId = info?.groupId ?? (Number.isFinite(item.groupId) ? Number(item.groupId) : undefined)
+      if (!groupId || groupId <= 0) continue
+      const cid = String(item.collectionId)
+      if (!collectionGroupOwnership.has(cid)) {
+        collectionGroupOwnership.set(cid, new Map())
+      }
+      const groupMap = collectionGroupOwnership.get(cid)!
+      if (!groupMap.has(groupId)) {
+        groupMap.set(groupId, new Set())
+      }
+      groupMap.get(groupId)!.add(pid)
+
+      // Ensure product metadata includes best-known name/abbr
+      if (info) {
+        if (!info.groupName && groupMeta.get(groupId)?.name) info.groupName = groupMeta.get(groupId)?.name
+        if (!info.abbreviation && groupMeta.get(groupId)?.abbreviation) info.abbreviation = groupMeta.get(groupId)?.abbreviation
+      } else {
+        productInfo.set(pid, {
+          groupId,
+          groupName: groupMeta.get(groupId)?.name,
+          abbreviation: groupMeta.get(groupId)?.abbreviation,
+        })
+      }
+    }
+
+    // Determine dominant group for each collection
+    type ProgressSeed = {
+      groupId: number
+      ownedProducts: Set<number>
+      name?: string
+      abbreviation?: string
+    }
+    const progressSeeds = new Map<string, ProgressSeed>()
+    const dominantGroupIds = new Set<number>()
+    for (const [collectionId, groupMap] of collectionGroupOwnership.entries()) {
+      let best: { groupId: number; owned: Set<number> } | null = null
+      for (const [groupId, ownedSet] of groupMap.entries()) {
+        if (!best || ownedSet.size > best.owned.size) {
+          best = { groupId, owned: ownedSet }
+        }
+      }
+      if (best) {
+        const samplePid = best.owned.values().next().value as number | undefined
+        const info = samplePid ? productInfo.get(samplePid) : undefined
+        const meta = groupMeta.get(best.groupId)
+        progressSeeds.set(collectionId, {
+          groupId: best.groupId,
+          ownedProducts: best.owned,
+          name: info?.groupName || meta?.name,
+          abbreviation: info?.abbreviation || meta?.abbreviation,
+        })
+        dominantGroupIds.add(best.groupId)
+      }
+    }
+
+    // Fetch full product lists for dominant groups to determine target card counts
+    const groupProducts = new Map<number, Set<number>>()
+    for (const gid of dominantGroupIds) {
+      try {
+        const resp: any = await ctx.runAction(api.tcg.listGroupProducts, { groupId: gid })
+        const list: any[] = resp?.results || resp?.Results || resp?.data || []
+        const set = new Set<number>()
+        for (const entry of list) {
+          const pid = Number(entry?.productId ?? entry?.ProductId ?? entry?.product?.productId)
+          if (Number.isFinite(pid) && pid > 0) set.add(pid)
+        }
+        groupProducts.set(gid, set)
+      } catch (error) {
+        console.warn('Failed to fetch group products', gid, error)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+
+    const progressByCollection = new Map<string, {
+      completionPercentage: number
+      missingCards: number
+      setName?: string
+      setAbbreviation?: string
+      targetCardCount: number
+      ownedTargetCards: number
+    }>()
+    for (const [collectionId, seed] of progressSeeds.entries()) {
+      const inventory = groupProducts.get(seed.groupId)
+      if (!inventory || inventory.size === 0) continue
+      const owned = seed.ownedProducts
+      const ownedCount = owned.size
+      const targetCount = inventory.size
+      const missing = Math.max(0, targetCount - ownedCount)
+      const completion = targetCount > 0 ? (ownedCount / targetCount) * 100 : 0
+      progressByCollection.set(collectionId, {
+        completionPercentage: Math.min(100, Math.max(0, completion)),
+        missingCards: missing,
+        setName: seed.name,
+        setAbbreviation: seed.abbreviation,
+        targetCardCount: targetCount,
+        ownedTargetCards: ownedCount,
+      })
+    }
+
     // Fetch SKUs for products
     const skusResp: any = await ctx.runAction(api.tcg.getSkus, { productIds })
     const skus: any[] = skusResp?.results || skusResp?.Results || skusResp?.data || []
@@ -477,6 +712,23 @@ export const refreshAllPricesAndSummaries = action({
 
     // Refresh summaries to persist current numbers (optional but useful)
     await Promise.all(collections.map(c => ctx.runMutation(api.collections.refreshCollectionSummary, { collectionId: c._id })))
+
+    // Patch refreshed summaries with computed set progress data
+    await Promise.all(collections.map(async (collection) => {
+      const progress = progressByCollection.get(String(collection._id))
+      if (!progress) return
+      await ctx.runMutation(api.collections.updateCollectionSummaryProgress, {
+        collectionId: collection._id,
+        progress: {
+          completionPercentage: progress.completionPercentage,
+          missingCards: progress.missingCards,
+          setName: progress.setName,
+          setAbbreviation: progress.setAbbreviation,
+          targetCardCount: progress.targetCardCount,
+          ownedTargetCards: progress.ownedTargetCards,
+        }
+      })
+    }))
 
     return { collections: collections.length, items: items.length, backfilled, pricedSkus: skuPricesList.length }
   }
@@ -536,6 +788,9 @@ export const collectionSummary = query({
         completionPercentage: 0,
         setName: null,
         missingCards: 0,
+        setAbbreviation: null,
+        targetCardCount: 0,
+        ownedTargetCards: 0,
         latestItemUpdatedAt: 0,
         updatedAt: 0,
       }
@@ -562,6 +817,9 @@ export const collectionSummary = query({
         completionPercentage: cached.completionPercentage,
         setName: cached.setName ?? null,
         missingCards: cached.missingCards,
+        setAbbreviation: cached.setAbbreviation ?? null,
+        targetCardCount: cached.targetCardCount ?? 0,
+        ownedTargetCards: cached.ownedTargetCards ?? 0,
         latestItemUpdatedAt: cached.latestItemUpdatedAt,
         updatedAt: cached.updatedAt,
       }
@@ -608,6 +866,9 @@ export const listCollectionSummaries = query({
         completionPercentage: computed.completionPercentage,
         missingCards: computed.missingCards,
         setName: computed.setName,
+        setAbbreviation: computed.setAbbreviation,
+        targetCardCount: computed.targetCardCount,
+        ownedTargetCards: computed.ownedTargetCards,
         latestItemUpdatedAt: computed.latestItemUpdatedAt,
         updatedAt: computed.updatedAt,
       })
@@ -642,6 +903,9 @@ export const refreshCollectionSummary = mutation({
         completionPercentage: computed.completionPercentage,
         missingCards: computed.missingCards,
         setName: computed.setName ?? undefined,
+        setAbbreviation: computed.setAbbreviation ?? undefined,
+        targetCardCount: computed.targetCardCount,
+        ownedTargetCards: computed.ownedTargetCards,
         latestItemUpdatedAt: computed.latestItemUpdatedAt,
         updatedAt: computed.updatedAt,
       })
@@ -656,6 +920,9 @@ export const refreshCollectionSummary = mutation({
         completionPercentage: computed.completionPercentage,
         missingCards: computed.missingCards,
         setName: computed.setName ?? undefined,
+        setAbbreviation: computed.setAbbreviation ?? undefined,
+        targetCardCount: computed.targetCardCount,
+        ownedTargetCards: computed.ownedTargetCards,
         latestItemUpdatedAt: computed.latestItemUpdatedAt,
         updatedAt: computed.updatedAt,
       })
@@ -663,6 +930,37 @@ export const refreshCollectionSummary = mutation({
 
     return computed
   },
+})
+
+export const updateCollectionSummaryProgress = mutation({
+  args: {
+    collectionId: v.id("collections"),
+    progress: v.object({
+      completionPercentage: v.number(),
+      missingCards: v.number(),
+      setName: v.optional(v.string()),
+      setAbbreviation: v.optional(v.string()),
+      targetCardCount: v.number(),
+      ownedTargetCards: v.number(),
+    }),
+  },
+  handler: async (ctx, { collectionId, progress }) => {
+    const user = await getCurrentUserOrThrow(ctx)
+    const summary = await ctx.db
+      .query("collectionSummaries")
+      .withIndex("byCollectionId", (q: any) => q.eq("collectionId", collectionId))
+      .first()
+    if (!summary || String(summary.userId) !== String(user._id)) return
+
+    await ctx.db.patch(summary._id, {
+      completionPercentage: progress.completionPercentage,
+      missingCards: progress.missingCards,
+      setName: typeof progress.setName === 'string' ? progress.setName : summary.setName,
+      setAbbreviation: typeof progress.setAbbreviation === 'string' ? progress.setAbbreviation : summary.setAbbreviation,
+      targetCardCount: progress.targetCardCount,
+      ownedTargetCards: progress.ownedTargetCards,
+    })
+  }
 })
 
 // Get overall collection statistics for the user

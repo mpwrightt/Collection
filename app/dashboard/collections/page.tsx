@@ -107,6 +107,9 @@ type CollectionSummary = {
   completionPercentage: number
   missingCards: number
   setName: string | null
+  setAbbreviation: string | null
+  targetCardCount: number
+  ownedTargetCards: number
   latestItemUpdatedAt: number
   updatedAt: number
 }
@@ -229,6 +232,9 @@ export default function CollectionsPage() {
         completionPercentage: summary.completionPercentage ?? 0,
         missingCards: summary.missingCards ?? 0,
         setName: summary.setName ?? null,
+        setAbbreviation: summary.setAbbreviation ?? null,
+        targetCardCount: summary.targetCardCount ?? 0,
+        ownedTargetCards: summary.ownedTargetCards ?? 0,
         latestItemUpdatedAt: summary.latestItemUpdatedAt ?? 0,
         updatedAt: summary.updatedAt ?? 0
       })
@@ -430,9 +436,36 @@ export default function CollectionsPage() {
 
     const averageValue = summary?.averageValue ?? folder.averageValue ?? (folder.itemCount ? estimatedValue / Math.max(folder.itemCount, 1) : 0)
     const updatedAt = summary?.updatedAt ?? (typeof folder.lastUpdated === "number" ? folder.lastUpdated : (folder.lastUpdated ? new Date(folder.lastUpdated).getTime() : Date.now()))
-    const completionPercentage = summary?.completionPercentage ?? folder.completionPercentage ?? 0
+    const completionPercentageRaw = summary?.completionPercentage ?? folder.completionPercentage ?? 0
+    const completionPercentage = Math.min(100, Math.max(0, completionPercentageRaw))
     const missingCards = summary?.missingCards ?? folder.missingCards ?? 0
     const setName = summary?.setName ?? null
+    const setAbbreviation = summary?.setAbbreviation ?? null
+    const summaryTargetCardCount = summary?.targetCardCount ?? 0
+    const summaryOwnedTargetCards = summary?.ownedTargetCards ?? 0
+
+    const derivedTargetCardCount = React.useMemo(() => {
+      if (summaryTargetCardCount > 0) return summaryTargetCardCount
+      if (completionPercentage > 0 && completionPercentage < 100 && missingCards > 0) {
+        const denom = 1 - completionPercentage / 100
+        const total = denom > 0 ? Math.round(missingCards / denom) : 0
+        return Number.isFinite(total) ? total : 0
+      }
+      if (completionPercentage === 100 && summaryOwnedTargetCards > 0) {
+        return summaryOwnedTargetCards
+      }
+      return 0
+    }, [summaryTargetCardCount, completionPercentage, missingCards, summaryOwnedTargetCards])
+
+    const derivedOwnedTargetCards = React.useMemo(() => {
+      if (summaryOwnedTargetCards > 0) return summaryOwnedTargetCards
+      if (derivedTargetCardCount > 0) {
+        return Math.max(0, derivedTargetCardCount - missingCards)
+      }
+      return 0
+    }, [summaryOwnedTargetCards, derivedTargetCardCount, missingCards])
+
+    const hasTargetCounts = derivedTargetCardCount > 0
 
     return (
       <div 
@@ -585,16 +618,33 @@ export default function CollectionsPage() {
 
             {/* Progress Bar */}
             <div>
-              <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                <span>{setName ? `${setName} Completion` : 'Collection Progress'}</span>
+              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                <span className="flex items-center gap-1 truncate">
+                  {setName ? (
+                    <>
+                      <span className="truncate">{setName}</span>
+                      {setAbbreviation && (
+                        <span className="uppercase opacity-70">({setAbbreviation})</span>
+                      )}
+                      <span className="shrink-0">Completion</span>
+                    </>
+                  ) : (
+                    "Collection Progress"
+                  )}
+                </span>
                 <span>{Math.round(completionPercentage)}%</span>
               </div>
               <Progress value={completionPercentage} className="h-2" />
-              {missingCards > 0 && (
+              {hasTargetCounts ? (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {derivedOwnedTargetCards} / {derivedTargetCardCount} cards
+                  {missingCards > 0 ? ` • ${missingCards} missing` : ""}
+                </p>
+              ) : missingCards > 0 ? (
                 <p className="text-xs text-muted-foreground mt-1">
                   {missingCards} cards missing
                 </p>
-              )}
+              ) : null}
             </div>
           </div>
 

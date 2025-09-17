@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import {
   ArrowLeft,
@@ -162,6 +161,9 @@ export default function CleanFolderDetailPage() {
     averageValue: 0,
     completionPercentage: 0,
     missingCards: 0,
+    setAbbreviation: null,
+    targetCardCount: 0,
+    ownedTargetCards: 0,
     latestItemUpdatedAt: 0,
     updatedAt: 0,
   }
