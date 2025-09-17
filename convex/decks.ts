@@ -1,4 +1,5 @@
 import { action, mutation, query } from "./_generated/server";
+import { api } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUser, getCurrentUserOrThrow, getOrCreateCurrentUser } from "./users";
 
@@ -98,6 +99,48 @@ export const listDecks = query({
     // Sort by updatedAt desc
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
     return out
+  }
+})
+
+// Action: Refresh product-level prices for all cards in a deck and upsert into pricing cache
+export const refreshDeckPrices = action({
+  args: { deckId: v.id("decks") },
+  handler: async (ctx, { deckId }) => {
+    'use node'
+    // Load deck (uses ownership checks in getDeck)
+    const data: any = await ctx.runQuery(api.decks.getDeck, { deckId } as any)
+    const productIds: number[] = Array.from(
+      new Set(
+        (data?.cards ?? [])
+          .map((c: any) => Number(c.productId))
+          .filter((n: any) => Number.isFinite(n) && n > 0)
+      )
+    )
+    if (productIds.length === 0) return { products: 0, upserted: 0 }
+
+    const CHUNK = 100
+    const entries: any[] = []
+    for (let i = 0; i < productIds.length; i += CHUNK) {
+      const chunk = productIds.slice(i, i + CHUNK)
+      try {
+        const resp: any = await ctx.runAction(api.tcg.getProductPrices, { productIds: chunk })
+        const list: any[] = resp?.results || resp?.Results || resp?.data || []
+        for (const rec of list) {
+          const pid = Number(rec.productId || rec.ProductId)
+          if (!pid) continue
+          entries.push({ productId: pid, categoryId: 0, currency: 'USD', data: rec })
+        }
+      } catch (e) {
+        // continue on partial failures
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+
+    if (entries.length > 0) {
+      await ctx.runMutation(api.pricing.upsertPrices, { entries })
+    }
+
+    return { products: productIds.length, upserted: entries.length }
   }
 })
 

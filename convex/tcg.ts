@@ -111,12 +111,13 @@ export const getSkus = action({
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
     const fetchSkuChunk = async (ids: number[]): Promise<any[]> => {
       const attempt = async (subset: number[]): Promise<any[]> => {
-        await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
         const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
         // Use individual product endpoints instead of batch
         const allSkus: any[] = [];
         for (const productId of subset) {
           try {
+            // Rate limit each outgoing request to avoid 429s
+            await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
             const url = apiBase(version, `catalog/products/${productId}/skus`);
             const payload = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
             const skus = normalizeList(payload);
@@ -358,7 +359,7 @@ function augmentSkuError(err: any, ids: number[]): Error {
 async function acquireSlotWithRetry(
   ctx: any,
   args: { provider: string; rate: number; windowMs: number },
-  retries: number = 5,
+  retries: number = 20,
 ) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -367,6 +368,16 @@ async function acquireSlotWithRetry(
     } catch (e: any) {
       const msg = String(e?.message || e);
       const isConflict = /rateLimits/.test(msg) && /changed while this mutation/.test(msg);
+      const isRate = /Rate limit exceeded/.test(msg);
+      if (isRate) {
+        // Wait approximately one slot interval before retrying, with jitter
+        const perCall = Math.max(50, Math.ceil(args.windowMs / Math.max(1, args.rate)));
+        const backoff = perCall + Math.floor(Math.random() * perCall);
+        await new Promise((r) => setTimeout(r, backoff));
+        // don't count towards retries for rate exceeds
+        attempt--;
+        continue;
+      }
       if (!isConflict || attempt === retries) {
         throw e;
       }
