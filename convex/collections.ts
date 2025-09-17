@@ -151,6 +151,37 @@ export const updateItemQuantity = mutation({
   },
 });
 
+// Update one or more fields on an item (quantity, condition, skuId, notes, acquiredPrice)
+export const updateItemFields = mutation({
+  args: {
+    itemId: v.id("collectionItems"),
+    quantity: v.optional(v.number()),
+    condition: v.optional(v.string()),
+    skuId: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    acquiredPrice: v.optional(v.number()),
+  },
+  handler: async (ctx, { itemId, quantity, condition, skuId, notes, acquiredPrice }) => {
+    const user = await getOrCreateCurrentUser(ctx as any);
+    const item = await ctx.db.get(itemId);
+    if (!item || item.userId !== user._id) throw new Error("Item not found");
+    const patch: any = { updatedAt: Date.now() };
+    if (typeof quantity === 'number') {
+      const q = Math.max(0, Math.floor(quantity));
+      if (q === 0) {
+        await ctx.db.delete(itemId);
+        return;
+      }
+      patch.quantity = q;
+    }
+    if (typeof condition === 'string') patch.condition = condition;
+    if (typeof skuId === 'number') patch.skuId = skuId;
+    if (typeof notes === 'string') patch.notes = notes;
+    if (typeof acquiredPrice === 'number') patch.acquiredPrice = acquiredPrice;
+    await ctx.db.patch(itemId, patch);
+  },
+});
+
 // Delete a collection (only if empty) or cascade=false by default
 export const deleteCollection = mutation({
   args: { collectionId: v.id("collections") },

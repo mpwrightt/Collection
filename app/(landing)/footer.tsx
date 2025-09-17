@@ -3,28 +3,28 @@ import Link from 'next/link'
 
 const links = [
     {
-        title: 'Features',
-        href: '#',
+        title: 'Product',
+        href: '#features',
     },
     {
-        title: 'Solution',
-        href: '#',
-    },
-    {
-        title: 'Customers',
-        href: '#',
+        title: 'Deck Builder',
+        href: '#deck',
     },
     {
         title: 'Pricing',
-        href: '#',
+        href: '#pricing',
     },
     {
-        title: 'Help',
-        href: '#',
+        title: 'Testimonials',
+        href: '#stories',
     },
     {
-        title: 'About',
-        href: '#',
+        title: 'FAQ',
+        href: '#faq',
+    },
+    {
+        title: 'Contact',
+        href: 'mailto:hello@collectiontracker.app',
     },
 ]
 
@@ -37,7 +37,7 @@ export default function FooterSection() {
                     aria-label="go home"
                     className="flex mx-auto gap-2 items-center size-fit">
                     <ChatMaxingIconColoured />
-                    <span className="text-xl font-medium">Starter.diy</span>
+                    <span className="text-xl font-medium">Collection Tracker</span>
                 </Link>
 
                 <div className="my-8 flex flex-wrap justify-center gap-6 text-sm">
@@ -159,7 +159,7 @@ export default function FooterSection() {
                         </svg>
                     </Link>
                 </div>
-                <span className="text-muted-foreground block text-center text-sm"> © {new Date().getFullYear()} Starter.diy, All rights reserved</span>
+                <span className="text-muted-foreground block text-center text-sm"> © {new Date().getFullYear()} Collection Tracker, All rights reserved</span>
             </div>
         </footer>
     )

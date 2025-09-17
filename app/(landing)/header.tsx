@@ -16,10 +16,10 @@ import { useTheme } from "next-themes"
 
 
 const menuItems = [
-    { name: 'Features', href: '#link' },
-    { name: 'Solution', href: '#link' },
-    { name: 'Pricing', href: '#link' },
-    { name: 'About', href: '#link' },
+    { name: 'Product', href: '#features' },
+    { name: 'Deck Builder', href: '#deck' },
+    { name: 'Pricing', href: '#pricing' },
+    { name: 'FAQ', href: '#faq' },
 ]
 
 export const HeroHeader = () => {
@@ -51,8 +51,8 @@ export const HeroHeader = () => {
                                 aria-label="home"
                                 className="flex items-center space-x-2">
                                 <ChatMaxingIconColoured />
-                                <span className="text-xl font-medium">Starter.diy</span>
-                                <Badge variant="outline" className="text-muted-foreground  text-xs">Demo</Badge>
+                                <span className="text-xl font-medium">Collection Tracker</span>
+                                <Badge variant="outline" className="text-muted-foreground text-xs">Beta</Badge>
                             </Link>
 
                             <button
@@ -110,33 +110,24 @@ export const HeroHeader = () => {
                                 <Unauthenticated>
                                     <SignInButton mode="modal">
                                         <Button
-                                            asChild
                                             variant="outline"
                                             size="sm"
                                             className={cn(isScrolled && 'lg:hidden')}>
-                                            <Link href="#">
-                                                <span>Login</span>
-                                            </Link>
+                                            <span>Log In</span>
                                         </Button>
                                     </SignInButton>
                                     <SignUpButton mode="modal">
                                         <Button
-                                            asChild
                                             size="sm"
                                             className={cn(isScrolled && 'lg:hidden')}>
-                                            <Link href="#">
-                                                <span>Sign Up</span>
-                                            </Link>
+                                            <span>Join Free</span>
                                         </Button>
                                     </SignUpButton>
                                     <SignUpButton mode="modal">
                                         <Button
-                                            asChild
                                             size="sm"
                                             className={cn(isScrolled ? 'lg:inline-flex' : 'hidden')}>
-                                            <Link href="#">
-                                                <span>Get Started</span>
-                                            </Link>
+                                            <span>Start Tracking</span>
                                         </Button>
                                     </SignUpButton>
                                 </Unauthenticated>

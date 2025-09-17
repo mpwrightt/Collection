@@ -27,7 +27,7 @@ export const getCategoryMedia = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/categories/${categoryId}/media`);
     return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
@@ -54,7 +54,7 @@ export const getAllGroups = action({
         const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
         const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
         if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-        await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+        await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
         const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
         const url = apiBase(version, `catalog/groups?${params.toString()}`);
         page = await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
@@ -111,7 +111,7 @@ export const getSkus = action({
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
     const fetchSkuChunk = async (ids: number[]): Promise<any[]> => {
       const attempt = async (subset: number[]): Promise<any[]> => {
-        await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+        await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
         const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
         // Use individual product endpoints instead of batch
         const allSkus: any[] = [];
@@ -158,7 +158,7 @@ export const getGroups = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/groups?${params.toString()}`);
     return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
@@ -179,7 +179,7 @@ export const getProductMedia = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/products/${productId}/media`);
     return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
@@ -202,7 +202,7 @@ export const getProductDetails = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/products/${ids}`);
     return await fetchJson(url, { method: 'GET', headers: { Accept: 'application/json', Authorization: `${type} ${token}` } });
@@ -354,6 +354,28 @@ function augmentSkuError(err: any, ids: number[]): Error {
   return new Error(`Failed to fetch SKUs for productIds=${ids.join(',')}: ${String(err)}`);
 }
 
+// Retry wrapper to mitigate write-conflicts on the rate limiter document under concurrency
+async function acquireSlotWithRetry(
+  ctx: any,
+  args: { provider: string; rate: number; windowMs: number },
+  retries: number = 5,
+) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      await ctx.runMutation(internal.tcg.acquireRateLimitSlot, args);
+      return;
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      const isConflict = /rateLimits/.test(msg) && /changed while this mutation/.test(msg);
+      if (!isConflict || attempt === retries) {
+        throw e;
+      }
+      const backoff = Math.min(300, 25 * (2 ** attempt)) + Math.floor(Math.random() * 25);
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+  }
+}
+
 // Public action to get catalog categories
 export const getCategories = action({
   args: {},
@@ -368,7 +390,7 @@ export const getCategories = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, "catalog/categories");
     return await fetchJson(url, {
@@ -401,7 +423,7 @@ export const searchProducts = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/products?${params.toString()}`);
     return await fetchJson(url, { method: "GET", headers: { Accept: "application/json", Authorization: `${type} ${token}` } });
@@ -424,7 +446,7 @@ export const getProductPrices = action({
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
     const version = process.env.TCGPLAYER_API_VERSION || "v1.39.0";
     if (!clientId || !clientSecret) throw new Error("Missing TCGPLAYER credentials");
-    await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+    await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `pricing/product/${ids}`);
     return await fetchJson(url, { method: "GET", headers: { Accept: "application/json", Authorization: `${type} ${token}` } });
@@ -456,7 +478,7 @@ export const getSkuPrices = action({
     const CHUNK = 50; // smaller chunk size to avoid long URLs and 400s
     for (let i = 0; i < cleanIds.length; i += CHUNK) {
       const chunk = cleanIds.slice(i, i + CHUNK);
-      await ctx.runMutation(internal.tcg.acquireRateLimitSlot, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
+      await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
       const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
       const primaryUrl = apiBase(version, `pricing/marketprices/skus?skuIds=${chunk.join(',')}`);
       let page: any;

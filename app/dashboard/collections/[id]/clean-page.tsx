@@ -86,12 +86,25 @@ type CardView = {
 }
 
 const CONDITIONS = [
-  { value: "NM", label: "Near Mint", color: "bg-green-500" },
-  { value: "LP", label: "Lightly Played", color: "bg-blue-500" },
-  { value: "MP", label: "Moderately Played", color: "bg-yellow-500" },
-  { value: "HP", label: "Heavily Played", color: "bg-orange-500" },
-  { value: "DMG", label: "Damaged", color: "bg-red-500" },
+  { value: "NM", label: "Near Mint", color: "bg-green-500", conditionId: 1 },
+  { value: "LP", label: "Lightly Played", color: "bg-blue-500", conditionId: 2 },
+  { value: "MP", label: "Moderately Played", color: "bg-yellow-500", conditionId: 3 },
+  { value: "HP", label: "Heavily Played", color: "bg-orange-500", conditionId: 4 },
+  { value: "DMG", label: "Damaged", color: "bg-red-500", conditionId: 5 },
 ]
+
+// TCGPlayer condition ID to abbreviation mapping
+const CONDITION_ID_MAP: Record<number, string> = {
+  1: "NM",   // Near Mint
+  2: "LP",   // Lightly Played
+  3: "MP",   // Moderately Played
+  4: "HP",   // Heavily Played
+  5: "DMG",  // Damaged
+  6: "U",    // Unopened
+  7: "FN",   // Fine
+  8: "GD",   // Good
+  9: "FR",   // Fair
+}
 
 const RARITIES = [
   { value: "common", label: "Common", color: "text-gray-500" },
@@ -142,12 +155,14 @@ export default function CleanFolderDetailPage() {
   const addItem = useMutation(api.collections.addItem)
   const removeItem = useMutation(api.collections.removeItem)
   const updateItemQuantity = useMutation(api.collections.updateItemQuantity)
+  const updateItemFields = useMutation(api.collections.updateItemFields)
 
   const getCategories = useAction(api.tcg.getCategories)
   const getAllGroups = useAction(api.tcg.getAllGroups)
   const searchProducts = useAction(api.tcg.searchProducts)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const getProductPrices = useAction(api.tcg.getProductPrices)
+  const getSkuPrices = useAction(api.tcg.getSkuPrices)
   const upsertPrices = useMutation(api.pricing.upsertPrices)
   const getSkus = useAction(api.tcg.getSkus)
 
@@ -156,9 +171,27 @@ export default function CleanFolderDetailPage() {
   const [itemThumbs, setItemThumbs] = React.useState<Record<string, string>>({})
   const [itemPrices, setItemPrices] = React.useState<Record<string, number>>({})
   const [itemUrls, setItemUrls] = React.useState<Record<string, string>>({})
+  const [itemSkus, setItemSkus] = React.useState<Record<string, any[]>>({}) // productId -> SKU array
   const [lastPriceRefresh, setLastPriceRefresh] = React.useState<Date>(new Date())
 
   // We fetch fresh prices every time to ensure real-time accuracy
+
+  // Helper function to get condition-specific price for a card
+  const getConditionPrice = React.useCallback((productId: number, condition: string): number => {
+    const pid = String(productId)
+    const conditionData = CONDITIONS.find(c => c.value === condition)
+    if (!conditionData) return itemPrices[pid] || 0
+
+    const skus = itemSkus[pid] || []
+    const conditionSku = skus.find(sku => sku.conditionId === conditionData.conditionId)
+
+    if (conditionSku && conditionSku.price) {
+      return conditionSku.price
+    }
+
+    // Fallback to general product price
+    return itemPrices[pid] || 0
+  }, [itemPrices, itemSkus])
 
   // Force refresh prices function
   const refreshPrices = React.useCallback(async () => {
@@ -167,22 +200,58 @@ export default function CleanFolderDetailPage() {
 
     setIsRefreshingPrices(true)
     try {
-      console.log("Refreshing prices for", pids.length, "products...")
+      console.log("Refreshing condition-specific prices for", pids.length, "products...")
+
+      // Step 1: Get SKUs for all products to understand condition structure
+      const skusResponse = await getSkus({ productIds: pids })
+      const skusList: any[] = (skusResponse as any)?.results || (skusResponse as any)?.Results || (skusResponse as any)?.data || []
+
+      console.log("Received", skusList.length, "SKUs")
+
+      // Step 2: Group SKUs by product and condition
+      const skuMap: Record<string, any[]> = {}
+      const skuIdsToPrice: number[] = []
+
+      skusList.forEach((sku: any) => {
+        const pid = String(sku.productId)
+        if (!skuMap[pid]) skuMap[pid] = []
+        skuMap[pid].push(sku)
+        skuIdsToPrice.push(sku.skuId || sku.productConditionId)
+      })
+
+      // Step 3: Get pricing for all relevant SKUs
+      let skuPricing: any[] = []
+      if (skuIdsToPrice.length > 0) {
+        const skuPrices = await getSkuPrices({ skuIds: skuIdsToPrice })
+        skuPricing = (skuPrices as any)?.results || (skuPrices as any)?.Results || (skuPrices as any)?.data || []
+      }
+
+      console.log("Received", skuPricing.length, "SKU price records")
+
+      // Step 4: Build SKU map with pricing
+      const enrichedSkuMap: Record<string, any[]> = {}
+      Object.keys(skuMap).forEach(pid => {
+        enrichedSkuMap[pid] = skuMap[pid].map((sku: any) => {
+          const pricing = skuPricing.find((p: any) => p.skuId === sku.skuId)
+          return {
+            ...sku,
+            price: pricing?.marketPrice || pricing?.midPrice || pricing?.lowPrice || 0
+          }
+        })
+      })
+
+      // Step 5: Fallback pricing (for products without SKU pricing)
       const prices = await getProductPrices({ productIds: pids })
       const plist: any[] = (prices as any)?.results || (prices as any)?.Results || (prices as any)?.data || []
-
-      console.log("Received", plist.length, "price records")
 
       const priceMap: Record<string, number> = {}
       for (const rec of plist) {
         const pid = String(rec.productId ?? rec.ProductId)
         if (!pid) continue
 
-        // TCGPlayer API pricing structure now includes subTypeName for condition
         let market = 0
         const subType = rec.subTypeName || 'Normal'
 
-        // Only use Normal (non-foil) pricing for now, or use any available price
         if (subType === 'Normal' || !priceMap[pid]) {
           if (typeof rec.marketPrice === 'number') {
             market = rec.marketPrice
@@ -198,6 +267,7 @@ export default function CleanFolderDetailPage() {
         }
       }
 
+      setItemSkus(enrichedSkuMap)
       setItemPrices(priceMap)
       setLastPriceRefresh(new Date())
 
@@ -214,7 +284,7 @@ export default function CleanFolderDetailPage() {
         }
       } catch {}
 
-      console.log("Price refresh complete. Updated", Object.keys(priceMap).length, "products")
+      console.log("Condition-specific price refresh complete. Updated", Object.keys(priceMap).length, "products with", Object.keys(enrichedSkuMap).length, "SKU sets")
     } catch (e) {
       console.error("Failed to refresh prices:", e)
     } finally {
@@ -272,14 +342,14 @@ export default function CleanFolderDetailPage() {
         quantity: it.quantity ?? 0,
         condition: it.condition ?? 'NM',
         imageUrl: itemThumbs[pidKey] ?? `https://product-images.tcgplayer.com/${it.productId}.jpg`,
-        marketPrice: itemPrices[pidKey] ?? 0,
+        marketPrice: getConditionPrice(it.productId, it.condition ?? 'NM'),
         priceChange: 0,
         rarity: 'rare',
         foil: false,
         tcgPlayerUrl: itemUrls[pidKey] ?? `https://www.tcgplayer.com/product/${it.productId}`,
       }
     })
-  }, [items, itemNames, itemThumbs, itemPrices, itemUrls])
+  }, [items, itemNames, itemThumbs, itemPrices, itemUrls, getConditionPrice])
 
   // Filter and sort cards
   const filteredCards = React.useMemo(() => {
@@ -370,12 +440,16 @@ export default function CleanFolderDetailPage() {
   const handleUpdateCard = async (updates: any) => {
     if (!selectedCardForDetails) return
     try {
-      await updateItemQuantity({ 
-        itemId: selectedCardForDetails._id as any, 
-        quantity: updates.quantity || selectedCardForDetails.quantity 
-      })
-      // Update local state
-      setSelectedCardForDetails({...selectedCardForDetails, ...updates})
+      const payload: any = { itemId: selectedCardForDetails._id as any }
+      if (updates.quantity !== undefined) payload.quantity = updates.quantity
+      if (updates.condition !== undefined) payload.condition = updates.condition
+      if (updates.skuId !== undefined) payload.skuId = Number(updates.skuId)
+      if (updates.notes !== undefined) payload.notes = updates.notes
+      if (updates.acquiredPrice !== undefined) payload.acquiredPrice = updates.acquiredPrice
+      // Persist updates
+      await updateItemFields(payload)
+      // Update local state for immediate feedback
+      setSelectedCardForDetails({ ...selectedCardForDetails, ...updates })
     } catch (error) {
       console.error('Failed to update card:', error)
     }
@@ -428,8 +502,9 @@ export default function CleanFolderDetailPage() {
               <p className="font-semibold">{card.name}</p>
               <p className="text-sm text-muted-foreground">{card.setName}</p>
             </div>
-            <Badge className={cn("text-xs", condition?.color)}>
-              {card.condition}
+        {/* No spacer needed; sticky header respects global header height */}
+            <Badge className={cn("text-xs text-white", condition?.color)}>
+              {condition?.label || card.condition}
             </Badge>
             <div className="text-right space-y-1">
               <p className="font-semibold">${card.marketPrice}</p>
@@ -525,8 +600,8 @@ export default function CleanFolderDetailPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              <Badge className={cn("text-xs", condition?.color)}>
-                {card.condition}
+              <Badge className={cn("text-xs text-white", condition?.color)}>
+                {condition?.label || card.condition}
               </Badge>
               <Badge variant="outline" className="text-xs">
                 {rarity?.label}
@@ -593,8 +668,8 @@ export default function CleanFolderDetailPage() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/10">
-        {/* Premium Header */}
-        <div className="sticky top-0 z-50 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
+        {/* Collection Header: sticky under global dashboard header */}
+        <div className="sticky top-[var(--header-height)] z-40 backdrop-blur-xl bg-background/80 border-b border-muted-foreground/10">
           <div className="px-4 lg:px-6 py-6">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-4">
@@ -713,75 +788,71 @@ export default function CleanFolderDetailPage() {
               </div>
             </div>
 
-            {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            {/* Stats Cards (smaller, data-driven) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
               <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-500/20">
-                <CardContent className="p-4">
+                <CardContent className="p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">Total Cards</p>
-                      <p className="text-2xl font-bold">{summary.totalQuantity}</p>
-                      <p className="text-xs text-muted-foreground">{filteredCards.length} unique</p>
+                      <p className="text-xs text-muted-foreground">Total Cards</p>
+                      <p className="text-xl font-semibold">{computedTotals.totalQuantity}</p>
+                      <p className="text-[11px] text-muted-foreground">{filteredCards.length} unique</p>
                     </div>
-                    <Package2 className="h-8 w-8 text-blue-500" />
+                    <Package2 className="h-6 w-6 text-blue-500" />
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="bg-gradient-to-br from-green-500/10 to-green-600/5 border-green-500/20">
-                <CardContent className="p-4">
+                <CardContent className="p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">Total Value</p>
-                      <p className="text-2xl font-bold">${summary.estimatedValue.toLocaleString()}</p>
-                      <p className="text-xs text-green-500">
+                      <p className="text-xs text-muted-foreground">Total Value</p>
+                      <p className="text-xl font-semibold">${computedTotals.estimatedValue.toLocaleString()}</p>
+                      <p className="text-[11px] text-green-500">
                         Last updated: {lastPriceRefresh.toLocaleTimeString()}
                       </p>
                     </div>
-                    <DollarSign className="h-8 w-8 text-green-500" />
+                    <DollarSign className="h-6 w-6 text-green-500" />
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-500/20">
-                <CardContent className="p-4">
+                <CardContent className="p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">Avg Card Value</p>
-                      <p className="text-2xl font-bold">${(summary.totalQuantity ? (summary.estimatedValue / summary.totalQuantity) : 0).toFixed(2)}</p>
-                      <p className="text-xs text-muted-foreground">per card</p>
+                      <p className="text-xs text-muted-foreground">Avg Card Value</p>
+                      <p className="text-xl font-semibold">${(computedTotals.totalQuantity ? (computedTotals.estimatedValue / computedTotals.totalQuantity) : 0).toFixed(2)}</p>
+                      <p className="text-[11px] text-muted-foreground">per card</p>
                     </div>
-                    <BarChart3 className="h-8 w-8 text-purple-500" />
+                    <BarChart3 className="h-6 w-6 text-purple-500" />
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="bg-gradient-to-br from-yellow-500/10 to-yellow-600/5 border-yellow-500/20">
-                <CardContent className="p-4">
+                <CardContent className="p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">Most Valuable</p>
-                      <p className="text-lg font-bold line-clamp-1">{topCard?.name}</p>
-                      <p className="text-xs text-yellow-500">${topCard?.marketPrice ?? 0}</p>
+                      <p className="text-xs text-muted-foreground">Most Valuable</p>
+                      <p className="text-sm font-semibold line-clamp-1">{topCard?.name}</p>
+                      <p className="text-[11px] text-yellow-500">${topCard?.marketPrice ?? 0}</p>
                     </div>
-                    <Trophy className="h-8 w-8 text-yellow-500" />
+                    <Trophy className="h-6 w-6 text-yellow-500" />
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="bg-gradient-to-br from-red-500/10 to-red-600/5 border-red-500/20">
-                <CardContent className="p-4">
+                <CardContent className="p-3">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">Collection Grade</p>
-                      <p className="text-2xl font-bold">A+</p>
-                      <div className="flex gap-0.5">
-                        {[...Array(5)].map((_, i) => (
-                          <Star key={i} className={cn("h-3 w-3", i < 4 ? "fill-yellow-500 text-yellow-500" : "text-muted-foreground")} />
-                        ))}
-                      </div>
+                      <p className="text-xs text-muted-foreground">Distinct Products</p>
+                      <p className="text-xl font-semibold">{new Set(filteredCards.map(c => c.productId)).size}</p>
+                      <p className="text-[11px] text-muted-foreground">in this view</p>
                     </div>
-                    <Crown className="h-8 w-8 text-red-500" />
+                    <Star className="h-6 w-6 text-red-500" />
                   </div>
                 </CardContent>
               </Card>

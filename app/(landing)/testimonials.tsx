@@ -10,40 +10,40 @@ type Testimonial = {
 
 const testimonials: Testimonial[] = [
     {
-        name: 'Jonathan Yombo',
-        role: 'Software Engineer',
-        image: 'https://randomuser.me/api/portraits/men/1.jpg',
-        quote: 'Tailus is really extraordinary and very practical, no need to break your head. A real gold mine.',
+        name: "Erica Dawson",
+        role: "Owner, Twin Sun Games",
+        image: "https://i.pravatar.cc/120?img=11",
+        quote: "Collection Tracker replaced the spreadsheets we kept for six years. Our wholesale team closes restocks in half the time because pricing and quantities are always correct.",
     },
     {
-        name: 'Yves Kalume',
-        role: 'GDE - Android',
-        image: 'https://randomuser.me/api/portraits/men/6.jpg',
-        quote: 'With no experience in webdesign I just redesigned my entire website in a few minutes with tailwindcss thanks to Tailus.',
+        name: "Luis Martínez",
+        role: "MTG Grinder",
+        image: "https://i.pravatar.cc/120?img=12",
+        quote: "Being able to filter my collection by archetype, format, and set legality is a game changer. I can build a RCQ deck in minutes and know exactly what I still need to borrow.",
     },
     {
-        name: 'Yucel Faruksahan',
-        role: 'Tailkits Creator',
-        image: 'https://randomuser.me/api/portraits/men/7.jpg',
-        quote: 'Great work on tailfolio template. This is one of the best personal website that I have seen so far :)',
+        name: "Sasha Kim",
+        role: "Pokémon Judge",
+        image: "https://i.pravatar.cc/120?img=32",
+        quote: "The deck validator understands every edge case we face at events. It flags issues before we submit lists and keeps my staff focused on players instead of paperwork.",
     },
     {
-        name: 'Shekinah Tshiokufila',
-        role: 'Senior Software Engineer',
-        image: 'https://randomuser.me/api/portraits/men/4.jpg',
-        quote: 'Tailus is redefining the standard of web design, with these blocks it provides an easy and efficient way for those who love beauty but may lack the time to implement it. I can only recommend this incredible wonder.',
+        name: "Noah Rivers",
+        role: "Content Creator, OffCurve",
+        image: "https://i.pravatar.cc/120?img=45",
+        quote: "The AI assistant feels like a teammate. It explains why certain cards are underperforming and suggests swaps from my binder—not random cards I don\'t own.",
     },
     {
-        name: 'Oketa Fred',
-        role: 'Fullstack Developer',
-        image: 'https://randomuser.me/api/portraits/men/2.jpg',
-        quote: 'I absolutely love Tailus! The component blocks are beautifully designed and easy to use, which makes creating a great-looking website a breeze.',
+        name: "Priya Chandrasekhar",
+        role: "Yu-Gi-Oh! Collector",
+        image: "https://i.pravatar.cc/120?img=16",
+        quote: "Tracking set rotations used to be a nightmare. Now I get one digest showing what\'s rotating, what spiked overnight, and where I can sell extras.",
     },
     {
-        name: 'Yves Kalume',
-        role: 'GDE - Android',
-        image: 'https://randomuser.me/api/portraits/men/6.jpg',
-        quote: 'With no experience in webdesign I just redesigned my entire website in a few minutes with tailwindcss thanks to Tailus.',
+        name: "Greg Flanders",
+        role: "Head Buyer, Topdeck TCG",
+        image: "https://i.pravatar.cc/120?img=23",
+        quote: "Our intake desk uses Collection Tracker to scan buys and instantly see profitability. Integrating the quicklist export with TCGplayer saved hours every week.",
     },
 ]
 
@@ -59,44 +59,53 @@ const testimonialChunks = chunkArray(testimonials, Math.ceil(testimonials.length
 
 export default function WallOfLoveSection() {
     return (
-        <section>
-            <div className="py-16 md:py-32">
+        <section id="stories">
+            <div className="py-24 md:py-32">
                 <div className="mx-auto max-w-6xl px-6">
                     <div className="text-center">
-                        <h2 className="text-foreground text-4xl font-semibold">Loved by the Community</h2>
-                        <p className="text-muted-foreground mb-12 mt-4 text-balance text-lg">Harum quae dolore orrupti aut temporibus ariatur.</p>
+                        <h2 className="text-foreground text-4xl font-semibold">Trusted by grinders, judges, and shop owners</h2>
+                        <p className="text-muted-foreground mb-12 mt-4 text-balance text-lg">Real teams are keeping inventory tight, validating decks faster, and turning insights into wins.</p>
                     </div>
                     <div className="mt-8 grid gap-3 sm:grid-cols-2 md:mt-12 lg:grid-cols-3">
                         {testimonialChunks.map((chunk, chunkIndex) => (
                             <div
                                 key={chunkIndex}
                                 className="space-y-3">
-                                {chunk.map(({ name, role, quote, image }, index) => (
-                                    <Card key={index}>
-                                        <CardContent className="grid grid-cols-[auto_1fr] gap-3 pt-6">
-                                            <Avatar className="size-9">
-                                                <AvatarImage
-                                                    alt={name}
-                                                    src={image}
-                                                    loading="lazy"
-                                                    width="120"
-                                                    height="120"
-                                                />
-                                                <AvatarFallback>ST</AvatarFallback>
-                                            </Avatar>
+                                {chunk.map(({ name, role, quote, image }, index) => {
+                                    const initials = name
+                                        .split(" ")
+                                        .map((part) => part[0])
+                                        .join("")
+                                        .slice(0, 2)
+                                        .toUpperCase()
 
-                                            <div>
-                                                <h3 className="font-medium">{name}</h3>
+                                    return (
+                                        <Card key={index}>
+                                            <CardContent className="grid grid-cols-[auto_1fr] gap-3 pt-6">
+                                                <Avatar className="size-9">
+                                                    <AvatarImage
+                                                        alt={name}
+                                                        src={image}
+                                                        loading="lazy"
+                                                        width="120"
+                                                        height="120"
+                                                    />
+                                                    <AvatarFallback>{initials}</AvatarFallback>
+                                                </Avatar>
 
-                                                <span className="text-muted-foreground block text-sm tracking-wide">{role}</span>
+                                                <div>
+                                                    <h3 className="font-medium">{name}</h3>
 
-                                                <blockquote className="mt-3">
-                                                    <p className="text-gray-700 dark:text-gray-300">{quote}</p>
-                                                </blockquote>
-                                            </div>
-                                        </CardContent>
-                                    </Card>
-                                ))}
+                                                    <span className="text-muted-foreground block text-sm tracking-wide">{role}</span>
+
+                                                    <blockquote className="mt-3">
+                                                        <p className="text-gray-700 dark:text-gray-300">{quote}</p>
+                                                    </blockquote>
+                                                </div>
+                                            </CardContent>
+                                        </Card>
+                                    )
+                                })}
                             </div>
                         ))}
                     </div>

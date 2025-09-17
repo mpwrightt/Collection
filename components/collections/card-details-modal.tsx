@@ -85,6 +85,7 @@ export function CardDetailsModal({
   const [isEditing, setIsEditing] = useState(false)
   const [editedCard, setEditedCard] = useState(card)
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [details, setDetails] = useState<any>(null)
   const [currentPrice, setCurrentPrice] = useState<number>(0)
   const [priceHistory, setPriceHistory] = useState<any[]>([])
@@ -99,20 +100,24 @@ export function CardDetailsModal({
   }, [card])
   
   useEffect(() => {
-    if (open && card && getProductDetails) {
-      loadCardDetails()
-    }
-  }, [open, card])
+    if (!open || !card) return
+    if (loading) return
+    loadCardDetails()
+    // Intentionally exclude function deps to avoid refetch loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, card?.productId])
   
   async function loadCardDetails() {
     if (!card || !getProductDetails) return
     setLoading(true)
     try {
-      const [detailsRes, pricesRes, skusRes] = await Promise.all([
-        getProductDetails([card.productId]),
-        getProductPrices ? getProductPrices([card.productId]) : Promise.resolve(null),
-        getSkus ? getSkus([card.productId]) : Promise.resolve(null),
-      ])
+      // Fetch sequentially to reduce concurrent rate limiter contention
+      const detailsRes = await getProductDetails([card.productId])
+      // small backoff between requests
+      await new Promise(r => setTimeout(r, 40))
+      const skusRes = getSkus ? await getSkus([card.productId]) : null
+      await new Promise(r => setTimeout(r, 40))
+      const pricesRes = getProductPrices ? await getProductPrices([card.productId]) : null
       
       const detailData = (detailsRes?.results || detailsRes?.Results || detailsRes?.data || [])[0]
       setDetails(detailData)
@@ -174,14 +179,14 @@ export function CardDetailsModal({
   }
   
   async function handleSave() {
-    setLoading(true)
+    setSaving(true)
     try {
       await onUpdateCard(editedCard)
       setIsEditing(false)
     } catch (error) {
       console.error("Failed to update card:", error)
     } finally {
-      setLoading(false)
+      setSaving(false)
     }
   }
   
@@ -266,7 +271,7 @@ export function CardDetailsModal({
                   <Button
                     size="sm"
                     onClick={handleSave}
-                    disabled={loading}
+                    disabled={saving}
                   >
                     <Save className="h-4 w-4 mr-2" />
                     Save Changes
@@ -395,7 +400,11 @@ export function CardDetailsModal({
                       {isEditing ? (
                         <Select 
                           value={String(selectedSku || "")} 
-                          onValueChange={(value) => setSelectedSku(Number(value))}
+                          onValueChange={(value) => {
+                            const sku = Number(value)
+                            setSelectedSku(sku)
+                            setEditedCard({ ...editedCard, skuId: sku })
+                          }}
                         >
                           <SelectTrigger>
                             <SelectValue placeholder="Select printing" />
