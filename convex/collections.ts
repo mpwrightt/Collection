@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { action, mutation, query } from "./_generated/server";
+import { api } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUser, getCurrentUserOrThrow, getOrCreateCurrentUser } from "./users";
 
@@ -19,23 +20,37 @@ const extractMarketPrice = (priceDoc: any): number => {
   const data = (priceDoc as any).data ?? priceDoc
   if (!data) return 0
 
-  if (typeof data.marketPrice === "number") {
-    return Number(data.marketPrice) || 0
+  // Helper to pick best available price from a record
+  const pick = (rec: any): number => {
+    if (!rec || typeof rec !== 'object') return 0
+    if (typeof rec.marketPrice === 'number') return Number(rec.marketPrice) || 0
+    if (typeof rec.midPrice === 'number') return Number(rec.midPrice) || 0
+    if (typeof rec.lowPrice === 'number') return Number(rec.lowPrice) || 0
+    if (typeof rec.directLowPrice === 'number') return Number(rec.directLowPrice) || 0
+    if (typeof rec.highPrice === 'number') return Number(rec.highPrice) || 0
+    return 0
   }
 
-  const candidates = Array.isArray(data.results) ? data.results : Array.isArray(data.Results) ? data.Results : []
-  if (Array.isArray(candidates) && candidates.length > 0) {
-    const normal = candidates.find((r: any) => r?.subTypeName === "Normal" && typeof r.marketPrice === "number")
-    const anyPrice = candidates.find((r: any) => typeof r?.marketPrice === "number")
-    if (normal) return Number(normal.marketPrice) || 0
-    if (anyPrice) return Number(anyPrice.marketPrice) || 0
-  }
+  // Direct object shape (product-level or sku-level)
+  const direct = pick(data)
+  if (direct > 0) return direct
 
-  if (Array.isArray(data.results) && data.results[0]?.marketPrice) {
-    return Number(data.results[0].marketPrice) || 0
-  }
-  if (Array.isArray(data.Results) && data.Results[0]?.marketPrice) {
-    return Number(data.Results[0].marketPrice) || 0
+  // Array shapes from API responses
+  const candidates = Array.isArray(data.results)
+    ? data.results
+    : Array.isArray(data.Results)
+      ? data.Results
+      : []
+  if (candidates.length > 0) {
+    // Prefer Normal subtype when available
+    const normal = candidates.find((r: any) => r?.subTypeName === 'Normal')
+    const fromNormal = pick(normal)
+    if (fromNormal > 0) return fromNormal
+    // Fallback to any entry with a price
+    for (const r of candidates) {
+      const val = pick(r)
+      if (val > 0) return val
+    }
   }
 
   return 0
@@ -104,10 +119,15 @@ async function computeCollectionSummaryInternal(
     return price
   }
 
+  // Pricing: prefer per-item effectivePrice if stored; otherwise use SKU-first cache lookup
   let estimatedValue = 0
-  for (const { productId, skuId, quantity } of quantityBySku.values()) {
-    const market = await getMarketPriceForKey(productId, skuId)
-    estimatedValue += quantity * market
+  for (const item of mine) {
+    const qty = item.quantity ?? 0
+    let unit = typeof item.effectivePrice === 'number' ? item.effectivePrice : undefined
+    if (typeof unit !== 'number' || !(unit > 0)) {
+      unit = await getMarketPriceForKey(item.productId, item.skuId)
+    }
+    estimatedValue += qty * (unit || 0)
   }
 
   const distinctProducts = productSet.size
@@ -338,8 +358,10 @@ export const updateItemFields = mutation({
     skuId: v.optional(v.number()),
     notes: v.optional(v.string()),
     acquiredPrice: v.optional(v.number()),
+    effectivePrice: v.optional(v.number()),
+    priceUpdatedAt: v.optional(v.number()),
   },
-  handler: async (ctx, { itemId, quantity, condition, skuId, notes, acquiredPrice }) => {
+  handler: async (ctx, { itemId, quantity, condition, skuId, notes, acquiredPrice, effectivePrice, priceUpdatedAt }) => {
     const user = await getOrCreateCurrentUser(ctx as any);
     const item = await ctx.db.get(itemId);
     if (!item || item.userId !== user._id) throw new Error("Item not found");
@@ -356,6 +378,8 @@ export const updateItemFields = mutation({
     if (typeof skuId === 'number') patch.skuId = skuId;
     if (typeof notes === 'string') patch.notes = notes;
     if (typeof acquiredPrice === 'number') patch.acquiredPrice = acquiredPrice;
+    if (typeof effectivePrice === 'number') patch.effectivePrice = effectivePrice;
+    if (typeof priceUpdatedAt === 'number') patch.priceUpdatedAt = priceUpdatedAt;
     await ctx.db.patch(itemId, patch);
   },
 });
@@ -378,6 +402,86 @@ export const deleteCollection = mutation({
   }
 });
 
+// Action: Auto refresh all SKU-level pricing and recompute summaries
+export const refreshAllPricesAndSummaries = action({
+  args: {},
+  handler: async (ctx) => {
+    'use node'
+    // Load all collections and their items
+    const collections: any[] = (await ctx.runQuery(api.collections.listCollections, {} as any)) as any[]
+    const itemsLists: any[] = await Promise.all([
+      ...collections.map(c => ctx.runQuery(api.collections.listItems, { collectionId: c._id } as any)),
+      ctx.runQuery(api.collections.listItems, {} as any), // unassigned
+    ])
+    const items: any[] = ([] as any[]).concat(...itemsLists.map(x => x as any[]))
+
+    const productIds = Array.from(new Set(items.map(i => Number(i.productId)).filter(n => Number.isFinite(n) && n > 0)))
+    if (productIds.length === 0) {
+      // Still ensure summaries are persisted
+      await Promise.all(collections.map(c => ctx.runMutation(api.collections.refreshCollectionSummary, { collectionId: c._id })))
+      return { collections: collections.length, items: 0, backfilled: 0, pricedSkus: 0 }
+    }
+
+    // Fetch SKUs for products
+    const skusResp: any = await ctx.runAction(api.tcg.getSkus, { productIds })
+    const skus: any[] = skusResp?.results || skusResp?.Results || skusResp?.data || []
+    const skuMap = new Map<number, any[]>()
+    const skuIds: number[] = []
+    const skuIdToProductId = new Map<number, number>()
+    for (const sku of skus) {
+      const pid = Number(sku.productId)
+      if (!skuMap.has(pid)) skuMap.set(pid, [])
+      skuMap.get(pid)!.push(sku)
+      const sid = Number(sku.skuId || sku.productConditionId)
+      if (sid) { skuIds.push(sid); skuIdToProductId.set(sid, pid) }
+    }
+
+    // Fetch SKU prices (primary)
+    let skuPricesList: any[] = []
+    if (skuIds.length > 0) {
+      const skuPrices: any = await ctx.runAction(api.tcg.getSkuPrices, { skuIds })
+      skuPricesList = skuPrices?.results || skuPrices?.Results || skuPrices?.data || []
+    }
+
+    // Fetch product prices (fallback)
+    const prodPrices: any = await ctx.runAction(api.tcg.getProductPrices, { productIds })
+    const prodPriceList: any[] = prodPrices?.results || prodPrices?.Results || prodPrices?.data || []
+
+    // Upsert cache
+    const entries: any[] = []
+    for (const rec of prodPriceList) {
+      const pid = Number(rec.productId || rec.ProductId)
+      if (!pid) continue
+      entries.push({ productId: pid, categoryId: 0, currency: 'USD', data: rec })
+    }
+    for (const sp of skuPricesList) {
+      const sid = Number(sp.skuId || sp.SkuId || sp.productConditionId)
+      const pid = sid ? (skuIdToProductId.get(sid) || Number(sp.productId || sp.ProductId)) : undefined
+      if (pid && sid) entries.push({ productId: Number(pid), skuId: Number(sid), categoryId: 0, currency: 'USD', data: sp })
+    }
+    if (entries.length > 0) await ctx.runMutation(api.pricing.upsertPrices, { entries })
+
+    // Backfill skuId for items missing it, based on condition
+    const CONDITION_ID: Record<string, number> = { NM: 1, LP: 2, MP: 3, HP: 4, DMG: 5 }
+    let backfilled = 0
+    for (const it of items) {
+      if (it.skuId) continue
+      const list = skuMap.get(Number(it.productId)) || []
+      const targetId = CONDITION_ID[String(it.condition || 'NM')] || 1
+      const match = list.find((s: any) => Number(s.conditionId) === targetId)
+      if (match?.skuId) {
+        await ctx.runMutation(api.collections.updateItemFields, { itemId: it._id, skuId: Number(match.skuId) })
+        backfilled++
+      }
+    }
+
+    // Refresh summaries to persist current numbers (optional but useful)
+    await Promise.all(collections.map(c => ctx.runMutation(api.collections.refreshCollectionSummary, { collectionId: c._id })))
+
+    return { collections: collections.length, items: items.length, backfilled, pricedSkus: skuPricesList.length }
+  }
+})
+
 // List top-level collections with item counts
 export const listCollectionsWithCounts = query({
   args: { parentId: v.optional(v.id("collections")) },
@@ -388,7 +492,11 @@ export const listCollectionsWithCounts = query({
       .query("collections")
       .withIndex("byUserId", q => q.eq("userId", user._id))
       .collect();
-    const filtered = cols.filter(c => (parentId ? c.parentId === parentId : !c.parentId));
+    // If parentId is undefined, return ALL collections (both top-level and nested).
+    // Otherwise, filter to direct children of the specified parent.
+    const filtered = (typeof parentId === 'undefined')
+      ? cols
+      : cols.filter(c => c.parentId === parentId);
     const counts = new Map<string, number>();
     const items = await ctx.db
       .query("collectionItems")

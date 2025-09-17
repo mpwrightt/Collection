@@ -66,6 +66,15 @@ const CONDITIONS = [
   { value: "DMG", label: "Damaged", color: "text-red-600" },
 ]
 
+// TCGplayer condition ID mapping (consistent with detail page)
+const CONDITION_ID_MAP: Record<string, number> = {
+  NM: 1,
+  LP: 2,
+  MP: 3,
+  HP: 4,
+  DMG: 5,
+}
+
 export function AddCardsDialogV2({
   open,
   onOpenChange,
@@ -216,12 +225,14 @@ export function AddCardsDialogV2({
       const cardsToAdd = selected.map(card => {
         const pid = Number(card.productId || card.ProductId)
         const skus = skuMap.get(pid) || []
+        const targetConditionId = CONDITION_ID_MAP[bulkCondition] || 1
+        const matched = skus.find((s: any) => Number(s.conditionId) === targetConditionId) || skus[0]
         return {
           ...card,
-          skuId: skus[0]?.skuId,
+          skuId: matched?.skuId,
           condition: bulkCondition,
           quantity: bulkQuantity,
-          id: `${pid}-${skus[0]?.skuId || 'default'}-${bulkCondition}`
+          id: `${pid}-${matched?.skuId || 'default'}-${bulkCondition}`
         }
       })
 

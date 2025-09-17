@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { useMutation, useQuery } from "convex/react"
+import { useAction, useMutation, useQuery } from "convex/react"
 import { api } from "@/convex/_generated/api"
 import { SignedIn, SignedOut, SignInButton } from "@clerk/nextjs"
 import { Button } from "@/components/ui/button"
@@ -136,6 +136,8 @@ const GRADE_BADGES = {
 
 // Demo mode enabled when Convex url is not configured at build time
 const DEMO_MODE = !process.env.NEXT_PUBLIC_CONVEX_URL
+// Only show debug pricing controls in non-production environments
+const SHOW_DEBUG_PRICING = process.env.NODE_ENV !== 'production'
 
 // Demo data for testing
 const DEMO_FOLDERS = [
@@ -203,6 +205,7 @@ export default function CollectionsPage() {
   const updateCollection = useMutation(api.collections.updateCollection)
   const deleteCollection = useMutation(api.collections.deleteCollection)
   const addPricingForUserCards = useMutation(api.debug.addPricingForUserCards)
+  const refreshAllPrices = useAction(api.collections.refreshAllPricesAndSummaries)
 
   // Get collection stats
   
@@ -232,6 +235,22 @@ export default function CollectionsPage() {
     }
     return map
   }, [summaries])
+
+  // Auto-refresh SKU pricing and summaries once on page load (no button)
+  React.useEffect(() => {
+    let did = false
+    if (DEMO_MODE) return
+    const run = async () => {
+      if (did) return
+      did = true
+      try {
+        await refreshAllPrices({})
+      } catch (e) {
+        console.warn('Auto price refresh failed:', e)
+      }
+    }
+    run()
+  }, [refreshAllPrices])
 
   // Process folders with enhanced data using real pricing data
   const enhancedFolders = React.useMemo(() => {
@@ -495,20 +514,22 @@ export default function CollectionsPage() {
                     </DropdownMenuItem>
                   }
                 />
-                <DropdownMenuItem onClick={async () => {
-                  try {
-                    console.log("Adding pricing for collection:", folder._id);
-                    const result = await addPricingForUserCards({ collectionId: folder._id as any });
-                    console.log("Pricing added:", result);
-                    alert(`Added pricing for ${result.pricingEntriesCreated} products!`);
-                  } catch (error) {
-                    console.error("Failed to add pricing:", error);
-                    alert("Failed to add pricing");
-                  }
-                }}>
-                  <DollarSign className="h-4 w-4 mr-2" />
-                  Fix Pricing
-                </DropdownMenuItem>
+                {SHOW_DEBUG_PRICING && (
+                  <DropdownMenuItem onClick={async () => {
+                    try {
+                      console.log("Adding pricing for collection:", folder._id);
+                      const result = await addPricingForUserCards({ collectionId: folder._id as any });
+                      console.log("Pricing added:", result);
+                      alert(`Added pricing for ${result.pricingEntriesCreated} products!`);
+                    } catch (error) {
+                      console.error("Failed to add pricing:", error);
+                      alert("Failed to add pricing");
+                    }
+                  }}>
+                    <DollarSign className="h-4 w-4 mr-2" />
+                    Fix Pricing
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem>
                   <Edit3 className="h-4 w-4 mr-2" />
                   Edit

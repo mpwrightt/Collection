@@ -16,21 +16,26 @@ export const upsertPrices = mutation({
   handler: async (ctx, { entries }) => {
     const now = Date.now();
     for (const e of entries) {
-      // Try to find existing record by productId (+ optional skuId)
-      let existing = await ctx.db
-        .query("pricingCache")
-        .withIndex("byProductId", (q) => q.eq("productId", e.productId))
-        .unique();
-
-      if (!existing && e.skuId !== undefined) {
+      // IMPORTANT: If skuId is present, we must upsert by the (productId, skuId) pair first
+      // so SKU-level entries don't overwrite product-level cache.
+      let existing: any = null;
+      if (e.skuId !== undefined) {
         existing = await ctx.db
           .query("pricingCache")
           .withIndex("byProductSku", (q) => q.eq("productId", e.productId).eq("skuId", e.skuId!))
           .unique();
       }
+      if (!existing) {
+        existing = await ctx.db
+          .query("pricingCache")
+          .withIndex("byProductId", (q) => q.eq("productId", e.productId))
+          .unique();
+      }
 
       if (existing) {
         await ctx.db.patch(existing._id, {
+          productId: e.productId,
+          skuId: e.skuId,
           categoryId: e.categoryId,
           currency: e.currency ?? existing.currency ?? "USD",
           data: e.data,

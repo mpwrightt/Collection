@@ -221,15 +221,20 @@ export default function CleanFolderDetailPage() {
 
       console.log("Received", skusList.length, "SKUs")
 
-      // Step 2: Group SKUs by product and condition
+      // Step 2: Group SKUs by product and condition, and map skuId -> productId
       const skuMap: Record<string, any[]> = {}
       const skuIdsToPrice: number[] = []
+      const skuIdToProductId = new Map<number, number>()
 
       skusList.forEach((sku: any) => {
         const pid = String(sku.productId)
         if (!skuMap[pid]) skuMap[pid] = []
         skuMap[pid].push(sku)
-        skuIdsToPrice.push(sku.skuId || sku.productConditionId)
+        const sid = Number(sku.skuId || sku.productConditionId)
+        if (sid) {
+          skuIdsToPrice.push(sid)
+          skuIdToProductId.set(sid, Number(sku.productId || pid))
+        }
       })
 
       // Step 3: Get pricing for all relevant SKUs
@@ -252,6 +257,29 @@ export default function CleanFolderDetailPage() {
           }
         })
       })
+
+      // Step 4b: Backfill missing skuId on items using condition match so summaries use SKU pricing
+      try {
+        for (const it of items) {
+          if (!it?.skuId && it?.productId && it?.condition) {
+            const pidKey = String(it.productId)
+            const list = enrichedSkuMap[pidKey] || []
+            const conditionEntry = CONDITIONS.find(c => c.value === (it.condition || 'NM'))
+            if (conditionEntry) {
+              const match = list.find((s: any) => Number(s.conditionId) === Number((conditionEntry as any).conditionId))
+              if (match?.skuId) {
+                try {
+                  await updateItemFields({ itemId: it._id as any, skuId: Number(match.skuId) })
+                } catch (e) {
+                  console.warn('Failed to backfill skuId for item', String(it._id), e)
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Backfill skuId process encountered an error:', e)
+      }
 
       // Step 5: Fallback pricing (for products without SKU pricing)
       const prices = await getProductPrices({ productIds: pids })
@@ -292,10 +320,40 @@ export default function CleanFolderDetailPage() {
           currency: 'USD',
           data: entry,
         }))
-        if (entries.length > 0) {
-          await upsertPrices({ entries })
+        const skuEntries = skuPricing.map((sp: any) => {
+          const sid = Number(sp.skuId || sp.SkuId || sp.productConditionId)
+          const pid = sid ? skuIdToProductId.get(sid) : undefined
+          return sid && pid ? {
+            productId: Number(pid),
+            skuId: Number(sid),
+            categoryId: 0,
+            currency: 'USD',
+            data: sp,
+          } : null
+        }).filter(Boolean) as any[]
+
+        const allEntries = [...entries, ...skuEntries]
+        if (allEntries.length > 0) {
+          await upsertPrices({ entries: allEntries })
         }
       } catch {}
+
+      // Persist effective per-item price (SKU + condition specific) so summaries can sum without extra calls
+      try {
+        const nowTs = Date.now()
+        await Promise.all(items.map(async (it: any) => {
+          const unit = getConditionPrice(it.productId, it.condition ?? 'NM')
+          if (typeof unit === 'number' && unit > 0) {
+            try {
+              await updateItemFields({ itemId: it._id as any, effectivePrice: unit, priceUpdatedAt: nowTs })
+            } catch (e) {
+              console.warn('Failed to persist effectivePrice for item', String(it._id))
+            }
+          }
+        }))
+      } catch (e) {
+        console.warn('Failed to persist effective prices', e)
+      }
 
       if (isRealCollectionId) {
         try {

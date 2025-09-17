@@ -44,6 +44,9 @@ export default defineSchema({
     condition: v.optional(v.string()), // e.g., NM, LP
     language: v.optional(v.string()), // e.g., EN, JP
     notes: v.optional(v.string()),
+    // Cached price we actually used to render the item (SKU/condition-specific)
+    effectivePrice: v.optional(v.number()),
+    priceUpdatedAt: v.optional(v.number()),
     acquiredPrice: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
