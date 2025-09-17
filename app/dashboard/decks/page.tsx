@@ -431,15 +431,12 @@ export default function DecksPage() {
       setSearching(true)
       setSearchError(null)
       try {
-        const params: Record<string, any> = {
+        const payload = await searchProducts({
           productName: query,
           limit: 40,
           offset: 0,
-        }
-        if (currentTcgOption?.categoryId) {
-          params.categoryId = currentTcgOption.categoryId
-        }
-        const payload = await searchProducts(params)
+          ...(currentTcgOption?.categoryId ? { categoryId: currentTcgOption.categoryId } : {}),
+        })
         const list = extractList(payload)
         setSearchResults(list)
         if (Array.isArray(list)) {

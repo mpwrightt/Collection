@@ -16,22 +16,25 @@ export async function POST() {
       if (setWithCards?.cards) {
         const pricingEntries = setWithCards.cards
           .filter(card => card.estimatedPrice && card.estimatedPrice > 0)
-          .map(card => ({
-            productId: card.productId,
-            categoryId: set.categoryId,
-            currency: "USD",
-            data: {
-              marketPrice: card.estimatedPrice,
-              results: [{
-                subTypeName: "Normal",
-                marketPrice: card.estimatedPrice,
-                lowPrice: card.estimatedPrice * 0.8,
-                midPrice: card.estimatedPrice * 0.9,
-                highPrice: card.estimatedPrice * 1.2,
-                directLowPrice: card.estimatedPrice * 0.7
-              }]
-            }
-          }));
+          .map(card => {
+            const price = card.estimatedPrice as number;
+            return {
+              productId: card.productId,
+              categoryId: set.categoryId,
+              currency: "USD",
+              data: {
+                marketPrice: price,
+                results: [{
+                  subTypeName: "Normal",
+                  marketPrice: price,
+                  lowPrice: price * 0.8,
+                  midPrice: price * 0.9,
+                  highPrice: price * 1.2,
+                  directLowPrice: price * 0.7
+                }]
+              }
+            };
+          });
 
         if (pricingEntries.length > 0) {
           await convex.mutation(api.pricing.upsertPrices, {
