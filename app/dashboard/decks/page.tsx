@@ -204,7 +204,7 @@ type AnalysisState = {
   error: string | null
 }
 
-export default function DecksPage() {
+function DecksPageImpl() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [selectedTcg, setSelectedTcg] = React.useState<string>(TCG_OPTIONS[0]?.value ?? "mtg")
@@ -228,6 +228,7 @@ export default function DecksPage() {
   const loadedDeck = useQuery(api.decks.getDeck, currentDeckId ? ({ deckId: currentDeckId } as any) : "skip") as any
 
   const analyzeDeck = useAction(api.ai.analyzeDeck)
+  const buildDeck = useAction(api.ai.buildDeck)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const searchProducts = useAction(api.tcg.searchProducts)
   const getProductPrices = useAction(api.tcg.getProductPrices)
@@ -738,6 +739,12 @@ export default function DecksPage() {
   const [saving, setSaving] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
 
+  // Build with AI (assistant to construct a deck from holdings)
+  const [aiGoal, setAiGoal] = React.useState("")
+  const [aiBusy, setAiBusy] = React.useState(false)
+  const [aiPlan, setAiPlan] = React.useState<string | null>(null)
+  const [aiError, setAiError] = React.useState<string | null>(null)
+
   const handleSaveDeck = React.useCallback(async () => {
     setSaving(true)
     try {
@@ -833,6 +840,175 @@ export default function DecksPage() {
     !!analysisState.result && analysisState.deckHash !== null && analysisState.deckHash !== deckHash
 
   const formatOptions = currentTcgOption?.formats ?? []
+
+  // Deck Assistant: Quick Fill from Collection to target main size
+  const getTargetMainSize = React.useCallback(() => {
+    switch (selectedTcg) {
+      case "mtg":
+        return 60
+      case "pokemon":
+        return 60
+      case "ygo":
+        return 40
+      default:
+        return 60
+    }
+  }, [selectedTcg])
+
+  const getMaxCopiesPerCard = React.useCallback(() => {
+    switch (selectedTcg) {
+      case "ygo":
+        return 3
+      default:
+        return 4
+    }
+  }, [selectedTcg])
+
+  const handleQuickFillFromCollection = React.useCallback(() => {
+    const target = getTargetMainSize()
+    const currentMainCount = deckCards.filter((c) => c.section === "main").reduce((sum, c) => sum + (c.quantity || 0), 0)
+    let needed = target - currentMainCount
+    if (needed <= 0) return
+
+    const maxCopies = getMaxCopiesPerCard()
+
+    // Copy current cards map for quick lookup
+    const byId = new Map(deckCards.map((c) => [c.id, c]))
+
+    // Sort holdings by quantity desc, price desc as heuristic
+    const owned = [...filteredHoldings].sort((a, b) => {
+      const qd = (b.quantity ?? 0) - (a.quantity ?? 0)
+      if (qd !== 0) return qd
+      const pd = (b.marketPrice ?? 0) - (a.marketPrice ?? 0)
+      return pd
+    })
+
+    updateCurrentDeck((snapshot) => {
+      let nextCards = [...snapshot.cards]
+
+      // Helper to get current total copies for a product across sections
+      const totalForProduct = (pid: number) => nextCards.filter((x) => x.productId === pid).reduce((s, x) => s + (x.quantity || 0), 0)
+
+      for (const h of owned) {
+        if (needed <= 0) break
+        const productId = Number(h.productId)
+        if (!Number.isFinite(productId)) continue
+        const skuId = h.skuId ?? null
+        const id = deckKey(productId, skuId, "main")
+        const currentTotal = totalForProduct(productId)
+        const canAddForRule = Math.max(0, maxCopies - currentTotal)
+        if (canAddForRule <= 0) continue
+        const ownedQty = Number(h.quantity ?? 0)
+        const alreadyForThisLine = nextCards.find((c) => c.id === id)?.quantity ?? 0
+        const remainingOwnedForLine = Math.max(0, ownedQty - alreadyForThisLine)
+        const add = Math.min(needed, canAddForRule, remainingOwnedForLine)
+        if (add <= 0) continue
+        const info = productInfo[String(productId)]
+        if (byId.has(id)) {
+          nextCards = nextCards.map((c) => (c.id === id ? { ...c, quantity: (c.quantity || 0) + add } : c))
+        } else {
+          nextCards = [
+            ...nextCards,
+            {
+              id,
+              productId,
+              skuId,
+              section: "main" as DeckSection,
+              quantity: add,
+              holdingsQuantity: Number(h.quantity ?? 0),
+              name: info?.name ?? `#${productId}`,
+              imageUrl: info?.imageUrl ?? fallbackImage(productId),
+              url: info?.url,
+              categoryId: h.categoryId ?? currentTcgOption?.categoryId ?? null,
+              marketPrice: typeof h.marketPrice === "number" ? h.marketPrice : undefined,
+            } as DeckCardRow,
+          ]
+        }
+        needed -= add
+      }
+
+      if (needed <= 0) return { ...snapshot, cards: nextCards }
+      return { ...snapshot, cards: nextCards }
+    })
+  }, [filteredHoldings, productInfo, deckCards, updateCurrentDeck, currentTcgOption, getTargetMainSize, getMaxCopiesPerCard])
+
+  const handleAiBuild = React.useCallback(async () => {
+    setAiBusy(true)
+    setAiError(null)
+    try {
+      // Build holdings by name for AI prompt (limit for payload size)
+      const ownedByName = (filteredHoldings.slice(0, 300)).map((h) => {
+        const info = productInfo[String(h.productId)]
+        const name = info?.name || `#${h.productId}`
+        return { name, quantity: Number(h.quantity ?? 0) }
+      })
+
+      const target = getTargetMainSize()
+      const result = await buildDeck({
+        tcg: selectedTcg,
+        format: currentDeck.format ?? undefined,
+        goal: aiGoal || undefined,
+        targetMainSize: target,
+        holdings: ownedByName,
+      } as any)
+
+      setAiPlan(typeof result?.plan === 'string' ? result.plan : null)
+
+      // Map AI card names to productIds via catalog search
+      const suggested: Array<{ name: string; quantity: number; section: DeckSection }> = (result?.cards || [])
+        .map((c: any) => ({ name: String(c.name), quantity: Number(c.quantity || 1), section: (c.section as DeckSection) || 'main' }))
+
+      const additions: Array<{ productId: number; quantity: number; section: DeckSection }> = []
+      for (const s of suggested) {
+        try {
+          const payload = await searchProducts({ productName: s.name, limit: 1, offset: 0, ...(currentTcgOption?.categoryId ? { categoryId: currentTcgOption.categoryId } : {}) })
+          const list: any[] = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+          const top = list[0]
+          const productId = Number(top?.productId ?? top?.ProductId)
+          if (Number.isFinite(productId) && productId > 0) {
+            additions.push({ productId, quantity: Math.max(1, Math.floor(s.quantity)), section: s.section })
+          }
+        } catch (e) {
+          // ignore individual mapping errors
+        }
+      }
+
+      if (additions.length === 0) return
+
+      // Apply to current deck snapshot
+      updateCurrentDeck((snapshot) => {
+        let nextCards = [...snapshot.cards]
+        for (const add of additions) {
+          const id = deckKey(add.productId, null, add.section)
+          const idx = nextCards.findIndex((c) => c.id === id)
+          if (idx >= 0) {
+            nextCards[idx] = { ...nextCards[idx], quantity: (nextCards[idx].quantity || 0) + add.quantity }
+            continue
+          }
+          const info = productInfo[String(add.productId)]
+          nextCards.push({
+            id,
+            productId: add.productId,
+            skuId: null,
+            section: add.section,
+            quantity: add.quantity,
+            holdingsQuantity: holdingsByProduct.get(add.productId)?.quantity ?? 0,
+            name: info?.name ?? `#${add.productId}`,
+            imageUrl: info?.imageUrl ?? fallbackImage(add.productId),
+            url: info?.url,
+            categoryId: currentTcgOption?.categoryId ?? null,
+            marketPrice: priceMap[String(add.productId)] ?? undefined,
+          })
+        }
+        return { ...snapshot, cards: nextCards }
+      })
+
+    } catch (e: any) {
+      setAiError(e?.message ?? 'Failed to build deck')
+    } finally {
+      setAiBusy(false)
+    }
+  }, [filteredHoldings, productInfo, searchProducts, buildDeck, selectedTcg, currentDeck, getTargetMainSize, updateCurrentDeck, holdingsByProduct, currentTcgOption, priceMap, aiGoal])
 
   return (
     <div className="px-4 lg:px-6 space-y-6">
@@ -1081,32 +1257,43 @@ export default function DecksPage() {
               <div>
                 <CardTitle className="flex items-center gap-2">
                   <Sparkles className="h-5 w-5" />
-                  Gemini Deck Insights
+                  Deck Assistant
                 </CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  Get format validation, strengths, and upgrade ideas tailored to your collection.
+                  Use AI insights on the deck page and quickly fill the main deck from your collection.
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {isAnalysisStale && (
-                  <Badge variant="outline">Analysis may be stale</Badge>
-                )}
-                <Button onClick={handleAnalyzeDeck} disabled={analysisBusy}>
-                  {analysisBusy ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Analyzing...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4" />
-                      Analyze Deck
-                    </span>
-                  )}
+                <Link href={currentDeckId ? `/dashboard/decks/${currentDeckId}` : `#`}>
+                  <Button disabled={!currentDeckId} variant="outline">
+                    Open AI Analysis
+                  </Button>
+                </Link>
+                <Button onClick={handleQuickFillFromCollection} variant="default">
+                  Quick Fill from Collection
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent>
+              <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-end mb-4">
+                <div className="flex-1">
+                  <label className="text-sm font-medium text-muted-foreground">Goal / Archetype</label>
+                  <Input value={aiGoal} onChange={(e) => setAiGoal(e.target.value)} placeholder="e.g., Mono-Red Aggro" />
+                </div>
+                <Button onClick={handleAiBuild} disabled={aiBusy}>
+                  {aiBusy ? (
+                    <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Building...</span>
+                  ) : (
+                    <span className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Build with AI</span>
+                  )}
+                </Button>
+              </div>
+              {aiError && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive mb-4">{aiError}</div>
+              )}
+              {aiPlan && (
+                <div className="rounded-md border p-3 text-sm text-muted-foreground mb-4">{aiPlan}</div>
+              )}
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-lg border p-3">
                   <div className="text-xs text-muted-foreground">Main Deck</div>
@@ -1114,9 +1301,7 @@ export default function DecksPage() {
                 </div>
                 <div className="rounded-lg border p-3">
                   <div className="text-xs text-muted-foreground">Sideboard / Extra</div>
-                  <div className="text-lg font-semibold">
-                    {deckStats.bySection.sideboard + deckStats.bySection.extra}
-                  </div>
+                  <div className="text-lg font-semibold">{deckStats.bySection.sideboard + deckStats.bySection.extra}</div>
                 </div>
                 <div className="rounded-lg border p-3">
                   <div className="text-xs text-muted-foreground">Missing Copies</div>
@@ -1127,92 +1312,6 @@ export default function DecksPage() {
                   <div className="text-lg font-semibold">{formatCurrency(deckStats.missingCost)}</div>
                 </div>
               </div>
-
-              {analysisState.error && (
-                <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                  {analysisState.error}
-                </div>
-              )}
-
-              {analysisState.result ? (
-                <div className="space-y-6">
-                  {analysisState.result?.ai?.analysis?.summary && (
-                    <div>
-                      <h3 className="text-sm font-semibold">Summary</h3>
-                      <p className="text-sm text-muted-foreground">
-                        {analysisState.result.ai.analysis.summary}
-                      </p>
-                    </div>
-                  )}
-
-                  {(analysisState.result?.ai?.analysis?.strengths?.length ?? 0) > 0 && (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold">Strengths</h3>
-                      <ul className="space-y-1 text-sm text-muted-foreground">
-                        {analysisState.result.ai.analysis.strengths.map((item: string, index: number) => (
-                          <li key={index}>• {item}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {(analysisState.result?.ai?.analysis?.weaknesses?.length ?? 0) > 0 && (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold">Weaknesses</h3>
-                      <ul className="space-y-1 text-sm text-muted-foreground">
-                        {analysisState.result.ai.analysis.weaknesses.map((item: string, index: number) => (
-                          <li key={index}>• {item}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {(analysisState.result?.ai?.issues?.length ?? 0) > 0 && (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold">Issues to Review</h3>
-                      <div className="space-y-2">
-                        {analysisState.result.ai.issues.map((issue: any, index: number) => (
-                          <div key={index} className="rounded-md border p-3 text-sm">
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium">{issue.type}</span>
-                              <Badge variant={issue.severity === "error" ? "destructive" : "secondary"}>
-                                {issue.severity}
-                              </Badge>
-                            </div>
-                            <p className="mt-1 text-muted-foreground">{issue.detail}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {(analysisState.result?.ai?.suggestions?.length ?? 0) > 0 && (
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold">Suggestions</h3>
-                      <div className="space-y-2">
-                        {analysisState.result.ai.suggestions.map((suggestion: any, index: number) => (
-                          <div key={index} className="rounded-md border p-3 text-sm">
-                            <div className="flex items-center justify-between">
-                              <span className="font-medium">{suggestion.change}</span>
-                              {suggestion.requiresPurchase && (
-                                <Badge variant="outline" className="inline-flex items-center gap-1">
-                                  <ShoppingCart className="h-3 w-3" />
-                                  Buy Needed
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="mt-1 text-muted-foreground">{suggestion.rationale}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Add cards to your deck and use Gemini to highlight format concerns, missing staples, and smart upgrades based on what you already own.
-                </p>
-              )}
             </CardContent>
           </Card>
         </div>
@@ -1353,5 +1452,13 @@ export default function DecksPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+export default function DecksPage() {
+  return (
+    <React.Suspense fallback={<div className="px-4 lg:px-6 py-8 text-sm text-muted-foreground">Loading deck builder...</div>}>
+      <DecksPageImpl />
+    </React.Suspense>
   )
 }

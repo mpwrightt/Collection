@@ -104,6 +104,9 @@ export default function SavedDecksPage() {
                         <TableCell className="whitespace-nowrap">{formatDate(deck.updatedAt)}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center gap-2 justify-end">
+                            <Link href={`/dashboard/decks/${String(deck._id)}`}>
+                              <Button size="sm" variant="outline">Analyze</Button>
+                            </Link>
                             <Link href={`/dashboard/decks?deck=${String(deck._id)}`}>
                               <Button size="sm" variant="outline">Open</Button>
                             </Link>
