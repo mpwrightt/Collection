@@ -67,6 +67,7 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AddCardsDialogV2 } from "@/components/collections/add-cards-dialog-v2"
 import { CardDetailsModal } from "@/components/collections/card-details-modal"
+import { setColorOverrides } from "@/lib/setColors"
 
 // Card view model for rendering grid/list items
 type CardView = {
@@ -74,6 +75,8 @@ type CardView = {
   productId: number
   name: string
   setName?: string
+  setAbbr?: string
+  setColor?: string
   number?: string
   quantity: number
   condition: string
@@ -178,12 +181,16 @@ export default function CleanFolderDetailPage() {
   const getSkuPrices = useAction(api.tcg.getSkuPrices)
   const upsertPrices = useMutation(api.pricing.upsertPrices)
   const getSkus = useAction(api.tcg.getSkus)
+  const getGroupsByIds = useAction(api.tcg.getGroupsByIds)
 
   // Enrichment maps for product names, thumbs, and prices
   const [itemNames, setItemNames] = React.useState<Record<string, string>>({})
   const [itemThumbs, setItemThumbs] = React.useState<Record<string, string>>({})
   const [itemPrices, setItemPrices] = React.useState<Record<string, number>>({})
   const [itemUrls, setItemUrls] = React.useState<Record<string, string>>({})
+  const [itemSetInfo, setItemSetInfo] = React.useState<Record<string, { name?: string; abbr?: string; color?: string; groupId?: number }>>({})
+  const [itemNumbers, setItemNumbers] = React.useState<Record<string, string>>({})
+  const [itemRarities, setItemRarities] = React.useState<Record<string, string>>({})
   const [itemSkus, setItemSkus] = React.useState<Record<string, any[]>>({}) // productId -> SKU array
   const [lastPriceRefresh, setLastPriceRefresh] = React.useState<Date>(new Date())
 
@@ -383,11 +390,43 @@ export default function CleanFolderDetailPage() {
 
         const nameMap: Record<string, string> = {}
         const urlMap: Record<string, string> = {}
+        const setInfoByProduct: Record<string, { name?: string; abbr?: string; groupId?: number }> = {}
+        const missingGroupIds: number[] = []
+        const numMap: Record<string, string> = {}
+        const rarMap: Record<string, string> = {}
         for (const d of dlist) {
           const pid = String(d.productId ?? d.ProductId ?? d.product?.productId)
           if (pid) {
             nameMap[pid] = d.name ?? d.ProductName ?? d.product?.name ?? `#${pid}`
             urlMap[pid] = d.url ?? `https://www.tcgplayer.com/product/${pid}`
+            const gid = Number(d.groupId ?? d.GroupId ?? d.product?.groupId)
+            const gname = d.groupName ?? d.product?.groupName
+            const abbr = d.abbreviation ?? d.groupAbbreviation ?? d.code
+            setInfoByProduct[pid] = { name: gname, abbr, groupId: Number.isFinite(gid) ? gid : undefined }
+            if (Number.isFinite(gid) && !gname) missingGroupIds.push(Number(gid))
+
+            // Parse number and rarity from various shapes
+            const ext = (d?.extendedData) as any
+            const fromExt = (keys: string[]): string | null => {
+              if (!ext) return null
+              if (Array.isArray(ext)) {
+                const hit = ext.find((e: any) => keys.some(k => String(e?.name || e?.displayName || '').toLowerCase() === k))
+                return hit ? String(hit.value ?? hit.val ?? hit.data ?? '') : null
+              }
+              if (typeof ext === 'object') {
+                for (const k of keys) {
+                  const val = ext[k] ?? ext[String(k).toLowerCase()] ?? ext[String(k).toUpperCase()]
+                  if (val !== undefined && val !== null) return String(val)
+                }
+              }
+              return null
+            }
+            const numKeys = ['number', 'card number', 'number #', 'no.', '#']
+            const rarKeys = ['rarity', 'rarity name']
+            const num = String(d?.number ?? '') || fromExt(numKeys.map(k => k.toLowerCase()))
+            const rar = String(d?.rarity ?? '') || fromExt(rarKeys.map(k => k.toLowerCase()))
+            if (num && num !== 'undefined') numMap[pid] = num
+            if (rar && rar !== 'undefined') rarMap[pid] = rar
           }
         }
 
@@ -399,6 +438,44 @@ export default function CleanFolderDetailPage() {
         setItemNames(nameMap)
         setItemThumbs(thumbMap)
         setItemUrls(urlMap)
+        setItemNumbers(numMap)
+        setItemRarities(rarMap)
+
+        // Enrich set names/abbreviations and compute color
+        try {
+          let groups: Record<string, { name?: string; abbr?: string }> = {}
+          if (missingGroupIds.length > 0) {
+            const resp = await getGroupsByIds({ groupIds: Array.from(new Set(missingGroupIds)) })
+            const list: any[] = (resp as any)?.results || (resp as any)?.Results || (resp as any)?.data || []
+            for (const g of list) {
+              const gid = String(g?.groupId ?? g?.GroupId ?? '')
+              if (!gid) continue
+              groups[gid] = { name: g?.name ?? g?.groupName, abbr: g?.abbreviation ?? g?.code }
+            }
+          }
+          const merged: Record<string, { name?: string; abbr?: string; color?: string; groupId?: number }> = {}
+          for (const [pid, info] of Object.entries(setInfoByProduct)) {
+            const gid = info.groupId
+            const g = gid ? (groups[String(gid)] || undefined) : undefined
+            const name = info.name || g?.name
+            const abbr = info.abbr || g?.abbr
+            // color override by groupId or abbr
+            let color: string | undefined = undefined
+            if (gid && setColorOverrides[String(gid)]) color = setColorOverrides[String(gid)]
+            if (!color && abbr && setColorOverrides[String(abbr).toUpperCase()]) color = setColorOverrides[String(abbr).toUpperCase()]
+            if (!color) {
+              const key = String(abbr || gid || pid).toUpperCase()
+              let hash = 0
+              for (let i = 0; i < key.length; i++) { hash = key.charCodeAt(i) + ((hash << 5) - hash); hash |= 0 }
+              const hue = Math.abs(hash) % 360
+              color = `hsl(${hue} 70% 50%)`
+            }
+            merged[pid] = { name, abbr, color, groupId: gid }
+          }
+          setItemSetInfo(merged)
+        } catch (e) {
+          // ignore set enrichment errors
+        }
 
         // Refresh prices automatically
         await refreshPrices()
@@ -416,19 +493,21 @@ export default function CleanFolderDetailPage() {
         _id: String(it._id),
         productId: it.productId,
         name: itemNames[pidKey] ?? `#${it.productId}`,
-        setName: it.groupName ?? '',
-        number: '',
+        setName: itemSetInfo[pidKey]?.name || '',
+        setAbbr: itemSetInfo[pidKey]?.abbr,
+        setColor: itemSetInfo[pidKey]?.color,
+        number: itemNumbers[pidKey] || '',
         quantity: it.quantity ?? 0,
         condition: it.condition ?? 'NM',
         imageUrl: itemThumbs[pidKey] ?? `https://product-images.tcgplayer.com/${it.productId}.jpg`,
         marketPrice: getConditionPrice(it.productId, it.condition ?? 'NM'),
         priceChange: 0,
-        rarity: 'rare',
+        rarity: (itemRarities[pidKey]?.toLowerCase?.() || 'unknown'),
         foil: false,
         tcgPlayerUrl: itemUrls[pidKey] ?? `https://www.tcgplayer.com/product/${it.productId}`,
       }
     })
-  }, [items, itemNames, itemThumbs, itemPrices, itemUrls, getConditionPrice])
+  }, [items, itemNames, itemThumbs, itemPrices, itemUrls, itemSetInfo, itemNumbers, itemRarities, getConditionPrice])
 
   const latestItemUpdate = React.useMemo(() => {
     return items.reduce((max: number, item: any) => {
@@ -623,7 +702,15 @@ export default function CleanFolderDetailPage() {
             />
             <div className="flex-1">
               <p className="font-semibold">{card.name}</p>
-              <p className="text-sm text-muted-foreground">{card.setName}</p>
+              <p className="text-sm text-muted-foreground flex items-center gap-1">
+                {card.setColor && (
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: card.setColor }} />
+                )}
+                {card.setName}
+                {card.setAbbr && (
+                  <span className="uppercase opacity-70">({card.setAbbr})</span>
+                )}
+              </p>
             </div>
         {/* No spacer needed; sticky header respects global header height */}
             <Badge className={cn("text-xs text-white", condition?.color)}>
@@ -719,15 +806,24 @@ export default function CleanFolderDetailPage() {
           <div className="space-y-2">
             <div>
               <h3 className="font-semibold text-lg line-clamp-1">{card.name}</h3>
-              <p className="text-sm text-muted-foreground">{card.setName} • {card.number}</p>
+              <p className="text-sm text-muted-foreground flex items-center gap-1">
+                {card.setColor && (
+                  <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: card.setColor }} />
+                )}
+                {card.setName}
+                {card.setAbbr && (
+                  <span className="uppercase opacity-70">({card.setAbbr})</span>
+                )}
+                <span>•</span>
+                {card.number || 'N/A'}
+              </p>
             </div>
-
             <div className="flex items-center gap-2">
               <Badge className={cn("text-xs text-white", condition?.color)}>
                 {condition?.label || card.condition}
               </Badge>
               <Badge variant="outline" className="text-xs">
-                {rarity?.label}
+                {rarity?.label || (card.rarity ? card.rarity : 'Unknown')}
               </Badge>
             </div>
 
@@ -742,13 +838,12 @@ export default function CleanFolderDetailPage() {
                   <span>{card.priceChange >= 0 ? "+" : ""}{card.priceChange}%</span>
                 </div>
               </div>
-              
               <div className="flex items-center gap-2">
                 <Button
                   size="icon"
                   variant="ghost"
                   className="h-8 w-8"
-                  onClick={async () => { try { await updateItemQuantity({ itemId: card._id as any, quantity: Math.max(0, (card.quantity - 1)) }) } catch {} }}
+                  onClick={async (e) => { e.stopPropagation(); try { await updateItemQuantity({ itemId: card._id as any, quantity: Math.max(0, (card.quantity - 1)) }) } catch {} }}
                 >
                   <Minus className="h-3 w-3" />
                 </Button>
@@ -757,7 +852,7 @@ export default function CleanFolderDetailPage() {
                   size="icon"
                   variant="ghost"
                   className="h-8 w-8"
-                  onClick={async () => { try { await updateItemQuantity({ itemId: card._id as any, quantity: card.quantity + 1 }) } catch {} }}
+                  onClick={async (e) => { e.stopPropagation(); try { await updateItemQuantity({ itemId: card._id as any, quantity: card.quantity + 1 }) } catch {} }}
                 >
                   <Plus className="h-3 w-3" />
                 </Button>
@@ -765,17 +860,14 @@ export default function CleanFolderDetailPage() {
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 text-blue-500 hover:text-blue-600"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    window.open(card.tcgPlayerUrl, '_blank')
-                  }}
+                  onClick={(e) => { e.stopPropagation(); window.open(card.tcgPlayerUrl, '_blank') }}
                 >
                   <ExternalLink className="h-3 w-3" />
                 </Button>
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={async () => { try { await removeItem({ itemId: card._id as any }) } catch {} }}
+                  onClick={async (e) => { e.stopPropagation(); try { await removeItem({ itemId: card._id as any }) } catch {} }}
                   className="text-destructive h-8 w-8"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -857,6 +949,7 @@ export default function CleanFolderDetailPage() {
               getProductDetails={(ids: number[]) => getProductDetails({ productIds: ids })}
               getProductPrices={(ids: number[]) => getProductPrices({ productIds: ids })}
               getSkus={(ids: number[]) => getSkus({ productIds: ids })}
+              getGroupsByIds={(gids: number[]) => getGroupsByIds({ groupIds: gids })}
             />
 
             {/* Compact KPI Dashboard */}

@@ -62,6 +62,7 @@ interface CardDetailsModalProps {
   getProductDetails?: (productIds: number[]) => Promise<any>
   getProductPrices?: (productIds: number[]) => Promise<any>
   getSkus?: (productIds: number[]) => Promise<any>
+  getGroupsByIds?: (groupIds: number[]) => Promise<any>
 }
 
 const CONDITIONS = [
@@ -81,6 +82,7 @@ export function CardDetailsModal({
   getProductDetails,
   getProductPrices,
   getSkus,
+  getGroupsByIds,
 }: CardDetailsModalProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editedCard, setEditedCard] = useState(card)
@@ -91,6 +93,9 @@ export function CardDetailsModal({
   const [priceHistory, setPriceHistory] = useState<any[]>([])
   const [skus, setSkus] = useState<any[]>([])
   const [selectedSku, setSelectedSku] = useState<number | undefined>()
+  const [setMeta, setSetMeta] = useState<{ name?: string; abbr?: string; color?: string }>()
+  const [derivedNumber, setDerivedNumber] = useState<string | null>(null)
+  const [derivedRarity, setDerivedRarity] = useState<string | null>(null)
   
   useEffect(() => {
     if (card) {
@@ -121,7 +126,31 @@ export function CardDetailsModal({
       
       const detailData = (detailsRes?.results || detailsRes?.Results || detailsRes?.data || [])[0]
       setDetails(detailData)
-      
+
+      // Parse set info (groupId -> group name/abbr) if not present
+      const groupId = Number(detailData?.groupId ?? detailData?.GroupId ?? detailData?.product?.groupId)
+      let groupName: string | undefined = detailData?.groupName || detailData?.product?.groupName
+      let groupAbbr: string | undefined = (detailData?.abbreviation || detailData?.groupAbbreviation || detailData?.code)
+      if (Number.isFinite(groupId) && (!groupName || !groupAbbr) && getGroupsByIds) {
+        try {
+          const resp = await getGroupsByIds([groupId])
+          const list: any[] = resp?.results || resp?.Results || resp?.data || []
+          const g = list[0]
+          groupName = groupName || g?.name || g?.groupName
+          groupAbbr = groupAbbr || g?.abbreviation || g?.code
+        } catch {}
+      }
+      // Derive color from abbr (stable but user-overridable elsewhere)
+      const color = (() => {
+        const key = String(groupAbbr || groupId || '').toUpperCase()
+        if (!key) return undefined
+        let hash = 0
+        for (let i = 0; i < key.length; i++) { hash = key.charCodeAt(i) + ((hash << 5) - hash); hash |= 0 }
+        const hue = Math.abs(hash) % 360
+        return `hsl(${hue} 70% 50%)`
+      })()
+      setSetMeta({ name: groupName, abbr: groupAbbr, color })
+
       const skuList = skusRes?.results || skusRes?.Results || skusRes?.data || []
       setSkus(skuList)
       
@@ -153,6 +182,29 @@ export function CardDetailsModal({
         }
       }
       setCurrentPrice(marketPrice || card.marketPrice || 0)
+
+      // Derive number/rarity robustly from extendedData and top-level fields
+      const ext = (detailData?.extendedData) as any
+      const fromExt = (keys: string[]): string | null => {
+        if (!ext) return null
+        if (Array.isArray(ext)) {
+          const hit = ext.find((e: any) => keys.some(k => String(e?.name || e?.displayName || '').toLowerCase() === k))
+          return hit ? String(hit.value ?? hit.val ?? hit.data ?? '') : null
+        }
+        if (typeof ext === 'object') {
+          for (const k of keys) {
+            const val = ext[k] ?? ext[String(k).toLowerCase()] ?? ext[String(k).toUpperCase()]
+            if (val !== undefined && val !== null) return String(val)
+          }
+        }
+        return null
+      }
+      const numKeys = ['number', 'card number', 'number #', 'no.', '#']
+      const rarKeys = ['rarity', 'rarity name']
+      const num = String(detailData?.number ?? '') || fromExt(numKeys.map(k => k.toLowerCase()))
+      const rar = String(detailData?.rarity ?? '') || fromExt(rarKeys.map(k => k.toLowerCase()))
+      setDerivedNumber(num && num !== 'undefined' ? num : null)
+      setDerivedRarity(rar && rar !== 'undefined' ? rar : null)
       
       // Generate price history based on real current price
       const history = []
@@ -219,7 +271,15 @@ export function CardDetailsModal({
             <div>
               <DialogTitle className="text-2xl">{card?.name || "Card Details"}</DialogTitle>
               <DialogDescription className="mt-1">
-                {details?.groupName || card?.setName} • #{card?.productId}
+                <span className="inline-flex items-center gap-1">
+                  {setMeta?.name || details?.groupName || card?.setName}
+                  {setMeta?.abbr && (
+                    <span className="uppercase text-muted-foreground">({setMeta.abbr})</span>
+                  )}
+                  <span className="ml-2 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: setMeta?.color || 'var(--muted-foreground)' }} />
+                  <span className="text-muted-foreground">•</span>
+                  #{card?.productId}
+                </span>
               </DialogDescription>
             </div>
             <div className="flex items-center gap-2">
@@ -449,17 +509,23 @@ export function CardDetailsModal({
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 text-muted-foreground" />
                         <span className="text-muted-foreground">Set:</span>
-                        <span>{details?.groupName || card?.setName}</span>
+                        <span className="inline-flex items-center gap-1">
+                          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: setMeta?.color || 'var(--muted-foreground)' }} />
+                          {setMeta?.name || details?.groupName || card?.setName || 'Unknown'}
+                          {setMeta?.abbr && (
+                            <span className="uppercase opacity-70">({setMeta.abbr})</span>
+                          )}
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Hash className="h-4 w-4 text-muted-foreground" />
                         <span className="text-muted-foreground">Number:</span>
-                        <span>{details?.number || card?.number || "N/A"}</span>
+                        <span>{derivedNumber || details?.number || card?.number || "N/A"}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Sparkles className="h-4 w-4 text-muted-foreground" />
                         <span className="text-muted-foreground">Rarity:</span>
-                        <span>{details?.rarity || card?.rarity || "Unknown"}</span>
+                        <span className="capitalize">{(derivedRarity || details?.rarity || card?.rarity || "Unknown")}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Calendar className="h-4 w-4 text-muted-foreground" />
@@ -582,14 +648,25 @@ export function CardDetailsModal({
                     {details.extendedData && (
                       <div>
                         <h3 className="font-semibold mb-2">Extended Information</h3>
-                        <dl className="grid grid-cols-2 gap-2 text-sm">
-                          {Object.entries(details.extendedData).map(([key, value]) => (
-                            <div key={key} className="flex gap-2">
-                              <dt className="text-muted-foreground capitalize">{key.replace(/_/g, ' ')}:</dt>
-                              <dd>{String(value)}</dd>
-                            </div>
-                          ))}
-                        </dl>
+                        {Array.isArray(details.extendedData) ? (
+                          <dl className="grid grid-cols-2 gap-2 text-sm">
+                            {details.extendedData.map((row: any, idx: number) => (
+                              <div key={idx} className="flex gap-2">
+                                <dt className="text-muted-foreground capitalize">{String(row?.name || row?.displayName || `Field ${idx+1}`).replace(/_/g, ' ') }:</dt>
+                                <dd>{String(row?.value ?? row?.val ?? row?.data ?? '')}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : (
+                          <dl className="grid grid-cols-2 gap-2 text-sm">
+                            {Object.entries(details.extendedData).map(([key, value]) => (
+                              <div key={key} className="flex gap-2">
+                                <dt className="text-muted-foreground capitalize">{key.replace(/_/g, ' ')}:</dt>
+                                <dd>{String(value)}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        )}
                       </div>
                     )}
                   </div>

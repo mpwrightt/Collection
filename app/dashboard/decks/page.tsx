@@ -1515,6 +1515,7 @@ function DecksPageImpl() {
         getProductDetails={async (ids: number[]) => await getProductDetails({ productIds: ids } as any)}
         getProductPrices={async (ids: number[]) => await getProductPrices({ productIds: ids } as any)}
         getSkus={async (ids: number[]) => await getSkus({ productIds: ids } as any)}
+        getGroupsByIds={async (gids: number[]) => await getGroupsByIds({ groupIds: gids } as any)}
       />
     </div>
   )
