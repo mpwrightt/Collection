@@ -23,7 +23,8 @@ export default function DeckAiPage() {
   const deckData = useQuery(api.decks.getDeck, params?.id ? ({ deckId: params.id } as any) : "skip") as any
   const holdingsData = useQuery(api.dashboard.getHoldings, { limit: 1000, offset: 0 }) || { rows: [], total: 0 }
 
-  const analyzeDeck = useAction(api.ai.analyzeDeck)
+  // Use new analyzer_v2 when available; fallback to legacy analyzer until Convex codegen updates
+  const analyzeDeck = useAction(((api as any).analyzer_v2?.analyzeDeckV2) ?? (api as any).ai.analyzeDeck)
   const validateDeckLegality = useAction(api.formats.validateDeckLegality)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const getProductPrices = useAction(api.tcg.getProductPrices)
@@ -177,6 +178,7 @@ export default function DeckAiPage() {
           cards: deckCards,
         },
         holdings,
+        includeAI: true,
       })
       setResult(out)
 

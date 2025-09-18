@@ -244,7 +244,8 @@ function DecksPageImpl() {
 
   const loadedDeck = useQuery(api.decks.getDeck, currentDeckId ? ({ deckId: currentDeckId } as any) : "skip") as any
 
-  const analyzeDeck = useAction(api.ai.analyzeDeck)
+  // Use new analyzer_v2 if types are available; fallback to legacy analyzer to avoid TS break until codegen updates
+  const analyzeDeck = useAction(((api as any).analyzer_v2?.analyzeDeckV2) ?? (api as any).ai.analyzeDeck)
   const buildDeck = useAction(api.ai.buildDeck)
   const getProductDetails = useAction(api.tcg.getProductDetails)
   const searchProducts = useAction(api.tcg.searchProducts)
@@ -919,6 +920,7 @@ function DecksPageImpl() {
     error: null,
   })
   const [analysisBusy, setAnalysisBusy] = React.useState(false)
+  const [analysisProgress, setAnalysisProgress] = React.useState<string | null>(null)
 
   const [saving, setSaving] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
@@ -930,6 +932,7 @@ function DecksPageImpl() {
   const [aiError, setAiError] = React.useState<string | null>(null)
   const [aiProgress, setAiProgress] = React.useState<string | null>(null)
   const [aiEnforce, setAiEnforce] = React.useState(true)
+  const [aiBiasToOwned, setAiBiasToOwned] = React.useState(false)
   const [aiCommander, setAiCommander] = React.useState("")
 
   // Scroll position preservation for tabs
@@ -1030,18 +1033,28 @@ function DecksPageImpl() {
       return
     }
     setAnalysisBusy(true)
+    setAnalysisProgress("Analyzing deck composition...")
     try {
+      // Optimized payload - only send essential data
       const deckPayload = deckCards.map((card) => ({
         productId: card.productId,
         skuId: card.skuId ?? undefined,
         quantity: card.quantity,
         section: card.section,
       }))
-      const holdingsPayload = filteredHoldings.slice(0, 200).map((row) => ({
-        productId: row.productId,
-        skuId: row.skuId ?? undefined,
-        quantity: row.quantity ?? 0,
-      }))
+
+      // Reduced holdings payload for better performance
+      const holdingsPayload = filteredHoldings
+        .filter(row => row.quantity > 0) // Only cards we actually own
+        .slice(0, 100) // Reduced from 200 for faster processing
+        .map((row) => ({
+          productId: row.productId,
+          skuId: row.skuId ?? undefined,
+          quantity: row.quantity ?? 0,
+        }))
+
+      setAnalysisProgress("Processing with AI...")
+
       const result = await analyzeDeck({
         tcg: selectedTcg,
         format: currentDeck.format ?? undefined,
@@ -1050,6 +1063,7 @@ function DecksPageImpl() {
           cards: deckPayload,
         },
         holdings: holdingsPayload,
+        includeAI: true,
       })
       setAnalysisState({ result, deckHash, error: null })
     } catch (error: any) {
@@ -1061,6 +1075,7 @@ function DecksPageImpl() {
       })
     } finally {
       setAnalysisBusy(false)
+      setAnalysisProgress(null)
     }
   }, [deckCards, filteredHoldings, analyzeDeck, selectedTcg, currentDeck, deckHash])
 
@@ -1192,7 +1207,7 @@ function DecksPageImpl() {
         goal: (aiGoal || aiCommander) ? `${aiGoal}${aiCommander ? ` | Commander: ${aiCommander}` : ''}` : undefined,
         targetMainSize: target,
         enforceRules: aiEnforce,
-        holdings: ownedByName,
+        holdings: aiBiasToOwned ? ownedByName : undefined,
       } as any)
 
       setAiPlan(typeof result?.plan === 'string' ? result.plan : null)
@@ -1205,7 +1220,8 @@ function DecksPageImpl() {
       const additions: Array<{ productId: number; quantity: number; section: DeckSection }> = []
 
       // Batch process card searches to improve performance
-      const batchSize = 5 // Process 5 cards at once
+      // Increase concurrency to reduce overall time while staying within server-side rate limits
+      const batchSize = 10 // Process 10 cards at once
       for (let i = 0; i < suggested.length; i += batchSize) {
         const batch = suggested.slice(i, i + batchSize)
         setAiProgress(`Finding cards... ${Math.min(i + batchSize, suggested.length)}/${suggested.length}`)
@@ -1222,7 +1238,7 @@ function DecksPageImpl() {
                 tcg: selectedTcg,
                 formatCode: currentDeck.format,
                 productName: s.name,
-                limit: 3, // Reduced from 5 for faster response
+                limit: 1, // Only need top match
                 offset: 0,
                 ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
               } as any)
@@ -1233,7 +1249,7 @@ function DecksPageImpl() {
               // Fallback to general search
               payload = await searchProducts({
                 productName: s.name,
-                limit: 3,
+                limit: 1,
                 offset: 0,
                 ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {})
               })
@@ -1258,7 +1274,7 @@ function DecksPageImpl() {
 
         // Small delay between batches to avoid overwhelming the API
         if (i + batchSize < suggested.length) {
-          await new Promise(resolve => setTimeout(resolve, 100))
+          await new Promise(resolve => setTimeout(resolve, 50))
         }
       }
 
@@ -1883,24 +1899,99 @@ function DecksPageImpl() {
                             </div>
                             <Switch checked={aiEnforce} onCheckedChange={setAiEnforce} />
                           </div>
+
+                          <div className="flex items-center justify-between p-3 border rounded-lg">
+                            <div>
+                              <p className="font-medium text-sm">Bias to Owned Collection</p>
+                              <p className="text-xs text-muted-foreground">Prefer cards you already own (optional)</p>
+                            </div>
+                            <Switch checked={aiBiasToOwned} onCheckedChange={setAiBiasToOwned} />
+                          </div>
                         </div>
 
-                        <Button onClick={handleAiBuild} disabled={aiBusy} className="w-full">
-                          {aiBusy ? (
-                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />{aiProgress || "Building deck..."}</>
-                          ) : (
-                            <><Sparkles className="h-4 w-4 mr-2" />Build with AI</>
-                          )}
-                        </Button>
+                        <div className="space-y-2">
+                          <Button onClick={handleAiBuild} disabled={aiBusy} className="w-full">
+                            {aiBusy ? (
+                              <><Loader2 className="h-4 w-4 animate-spin mr-2" />{aiProgress || "Building deck..."}</>
+                            ) : (
+                              <><Sparkles className="h-4 w-4 mr-2" />Build with AI</>
+                            )}
+                          </Button>
 
-                        {aiError && (
+                          <Button
+                            onClick={handleAnalyzeDeck}
+                            disabled={analysisBusy || deckCards.length === 0}
+                            variant="outline"
+                            className="w-full"
+                          >
+                            {analysisBusy ? (
+                              <><Loader2 className="h-4 w-4 animate-spin mr-2" />{analysisProgress || "Analyzing..."}</>
+                            ) : (
+                              <><Search className="h-4 w-4 mr-2" />Analyze Deck</>
+                            )}
+                          </Button>
+                        </div>
+
+                        {(aiError || analysisState.error) && (
                           <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg border border-destructive/20">
-                            {aiError}
+                            {aiError || analysisState.error}
                           </div>
                         )}
 
                         <div className="h-[360px] overflow-y-auto" ref={aiScrollRef}>
-                          {aiPlan ? (
+                          {analysisState.result ? (
+                            <div className="space-y-3">
+                              {/* Analysis Summary */}
+                              {analysisState.result.ai?.analysis?.summary && (
+                                <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                                  <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">Analysis</h4>
+                                  <p className="text-sm text-blue-800 dark:text-blue-200">{analysisState.result.ai.analysis.summary}</p>
+                                </div>
+                              )}
+
+                              {/* Strengths */}
+                              {analysisState.result.ai?.analysis?.strengths?.length > 0 && (
+                                <div className="p-3 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
+                                  <h4 className="font-medium text-green-900 dark:text-green-100 mb-2">Strengths</h4>
+                                  <ul className="text-sm text-green-800 dark:text-green-200 space-y-1">
+                                    {analysisState.result.ai.analysis.strengths.map((strength: string, idx: number) => (
+                                      <li key={idx}>• {strength}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Weaknesses */}
+                              {analysisState.result.ai?.analysis?.weaknesses?.length > 0 && (
+                                <div className="p-3 bg-orange-50 dark:bg-orange-950/20 rounded-lg border border-orange-200 dark:border-orange-800">
+                                  <h4 className="font-medium text-orange-900 dark:text-orange-100 mb-2">Areas to Improve</h4>
+                                  <ul className="text-sm text-orange-800 dark:text-orange-200 space-y-1">
+                                    {analysisState.result.ai.analysis.weaknesses.map((weakness: string, idx: number) => (
+                                      <li key={idx}>• {weakness}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+
+                              {/* Suggestions */}
+                              {analysisState.result.ai?.suggestions?.length > 0 && (
+                                <div className="p-3 bg-purple-50 dark:bg-purple-950/20 rounded-lg border border-purple-200 dark:border-purple-800">
+                                  <h4 className="font-medium text-purple-900 dark:text-purple-100 mb-2">Suggestions</h4>
+                                  <div className="space-y-2">
+                                    {analysisState.result.ai.suggestions.map((suggestion: any, idx: number) => (
+                                      <div key={idx} className="text-sm text-purple-800 dark:text-purple-200">
+                                        <p className="font-medium">{suggestion.change}</p>
+                                        <p className="text-xs opacity-75">{suggestion.rationale}</p>
+                                        {suggestion.requiresPurchase && (
+                                          <Badge variant="outline" className="mt-1 text-xs">Requires Purchase</Badge>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : aiPlan ? (
                             <div className="text-sm text-muted-foreground whitespace-pre-wrap p-3 bg-muted/30 rounded-lg">
                               {aiPlan}
                             </div>
@@ -1909,7 +2000,7 @@ function DecksPageImpl() {
                               <div className="h-12 w-12 bg-muted rounded-full flex items-center justify-center mb-4">
                                 <Sparkles className="h-6 w-6 text-muted-foreground" />
                               </div>
-                              <p className="text-muted-foreground">AI will create a deck plan based on your collection</p>
+                              <p className="text-muted-foreground">{aiBiasToOwned ? 'AI will create a deck plan biased to your collection' : 'AI will create a deck plan following format rules'}</p>
                             </div>
                           )}
                         </div>

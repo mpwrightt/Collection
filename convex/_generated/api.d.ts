@@ -14,6 +14,7 @@ import type {
   FunctionReference,
 } from "convex/server";
 import type * as ai from "../ai.js";
+import type * as analyzer_v2 from "../analyzer_v2.js";
 import type * as collections from "../collections.js";
 import type * as dashboard from "../dashboard.js";
 import type * as debug from "../debug.js";
@@ -37,6 +38,7 @@ import type * as users from "../users.js";
  */
 declare const fullApi: ApiFromModules<{
   ai: typeof ai;
+  analyzer_v2: typeof analyzer_v2;
   collections: typeof collections;
   dashboard: typeof dashboard;
   debug: typeof debug;

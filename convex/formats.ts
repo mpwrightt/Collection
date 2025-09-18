@@ -1,6 +1,6 @@
 import { action, query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 
 // Format document shape (flexible rules JSON)
 // Expect rules to optionally include:
@@ -99,35 +99,45 @@ export const searchLegalProducts = action({
       (!fmt || !fmt.rules || !Array.isArray(fmt.rules.legalGroupIds) || fmt.rules.legalGroupIds.length === 0) &&
       (tcg.toLowerCase() === 'pokemon') && String(formatCode || '').toLowerCase() === 'standard'
     ) {
+      // Prevent stampede: only one expensive computation per window
       try {
-        const CAT_POKEMON = 3;
-        const groupsResp: any = await ctx.runAction(api.tcg.getAllGroups, { categoryId: CAT_POKEMON } as any)
-        const groups: any[] = groupsResp?.results || groupsResp?.Results || groupsResp?.data || []
-        const allowedIds: number[] = []
-        for (const g of groups) {
-          const name: string = String(g?.name ?? g?.groupName ?? '')
-          const abbr: string = String(g?.abbreviation ?? g?.code ?? '')
-          // Heuristic: Scarlet & Violet era sets usually include 'Scarlet' or abbreviations starting with 'SV'
-          if (/scarlet\s*&\s*violet/i.test(name) || /^sv\s*\d*/i.test(abbr) || /^sv\s*\d*/i.test(name)) {
-            const gid = Number(g?.groupId ?? g?.GroupId)
-            if (Number.isFinite(gid) && gid > 0) allowedIds.push(gid)
-          }
-        }
-        if (allowedIds.length > 0) {
-          await ctx.runMutation(api.formats.upsertFormat, {
-            tcg: 'pokemon',
-            name: 'Standard',
-            code: 'standard',
-            rules: { ...(fmt?.rules ?? {}), legalGroupIds: Array.from(new Set(allowedIds)) },
-          } as any)
-          // Re-fetch the updated format after upserting
-          const formatsList = await ctx.runQuery(api.formats.getFormatsByTcg, { tcg });
-          const needle = String(formatCode).toLowerCase();
-          fmt = formatsList.find((f: any) => {
-            const c = (f.code ? String(f.code) : "").toLowerCase();
-            const n = (f.name ? String(f.name) : "").toLowerCase();
-            return c === needle || n === needle;
-          }) || null;
+        const acquire = await ctx.runMutation(internal.tcg.tryAcquireRateLimitSlot, {
+          provider: 'formats:pokemon-standard-legal-compute',
+          rate: 1,
+          windowMs: 10 * 60 * 1000, // 10 minutes
+        } as any)
+        if (acquire && acquire.ok) {
+          try {
+            const CAT_POKEMON = 3;
+            const groupsResp: any = await ctx.runAction(api.tcg.getAllGroups, { categoryId: CAT_POKEMON } as any)
+            const groups: any[] = groupsResp?.results || groupsResp?.Results || groupsResp?.data || []
+            const allowedIds: number[] = []
+            for (const g of groups) {
+              const name: string = String(g?.name ?? g?.groupName ?? '')
+              const abbr: string = String(g?.abbreviation ?? g?.code ?? '')
+              // Heuristic: Scarlet & Violet era sets usually include 'Scarlet' or abbreviations starting with 'SV'
+              if (/scarlet\s*&\s*violet/i.test(name) || /^sv\s*\d*/i.test(abbr) || /^sv\s*\d*/i.test(name)) {
+                const gid = Number(g?.groupId ?? g?.GroupId)
+                if (Number.isFinite(gid) && gid > 0) allowedIds.push(gid)
+              }
+            }
+            if (allowedIds.length > 0) {
+              await ctx.runMutation(api.formats.upsertFormat, {
+                tcg: 'pokemon',
+                name: 'Standard',
+                code: 'standard',
+                rules: { ...(fmt?.rules ?? {}), legalGroupIds: Array.from(new Set(allowedIds)) },
+              } as any)
+              // Re-fetch the updated format after upserting
+              const formatsList = await ctx.runQuery(api.formats.getFormatsByTcg, { tcg });
+              const needle = String(formatCode).toLowerCase();
+              fmt = formatsList.find((f: any) => {
+                const c = (f.code ? String(f.code) : "").toLowerCase();
+                const n = (f.name ? String(f.name) : "").toLowerCase();
+                return c === needle || n === needle;
+              }) || null;
+            }
+          } catch {}
         }
       } catch {}
     }

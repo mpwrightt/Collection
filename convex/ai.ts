@@ -15,7 +15,13 @@ type Holding = {
   quantity: number;
 };
 
-function computeStats(cards: DeckCard[]) {
+function getTargetMainSize(tcg: string, format?: string | null) {
+  if (tcg === 'ygo') return 40;
+  if (tcg === 'mtg' && (format || '').toLowerCase() === 'commander') return 100;
+  return 60; // mtg/pokemon default
+}
+
+function computeStats(cards: DeckCard[], tcg: string, format?: string | null) {
   const bySection: Record<string, number> = {};
   let total = 0;
   let unique = 0;
@@ -30,29 +36,67 @@ function computeStats(cards: DeckCard[]) {
     byProduct[key] = (byProduct[key] || 0) + c.quantity;
   }
 
+  // Heuristic duplicate flagging by TCG. Avoid false positives for Pokemon (basic energy) and MTG Commander.
+  let duplicateThreshold = 4;
+  if (tcg === 'ygo') duplicateThreshold = 3;
+  if (tcg === 'pokemon') duplicateThreshold = Number.POSITIVE_INFINITY; // skip
+  if (tcg === 'mtg' && (format || '').toLowerCase() === 'commander') duplicateThreshold = Number.POSITIVE_INFINITY; // skip
+
   const duplicates = Object.entries(byProduct)
-    .filter(([_, q]) => q > 4) // heuristic default; real rules handled by format engine later
+    .filter(([_, q]) => q > duplicateThreshold)
     .map(([k, q]) => ({ key: k, quantity: q }));
 
   return { total, unique, bySection, duplicates };
 }
 
 function extractFirstJson(text: string): any | null {
+  if (!text || typeof text !== 'string') return null;
+
+  console.log("Extracting JSON from:", text.substring(0, 100)); // Debug
+
+  // Try direct parsing first
   try {
-    return JSON.parse(text);
-  } catch {
-    // try to find fenced code block
-    const match = text.match(/```json[\s\S]*?```/i) || text.match(/\{[\s\S]*\}/);
-    if (match) {
-      const block = match[0].replace(/```json|```/gi, "").trim();
-      try {
-        return JSON.parse(block);
-      } catch {
-        return null;
-      }
-    }
-    return null;
+    const parsed = JSON.parse(text.trim());
+    console.log("Direct parse successful");
+    return parsed;
+  } catch (e) {
+    console.log("Direct parse failed:", e instanceof Error ? e.message : String(e));
   }
+
+  // Remove common AI response prefixes/suffixes
+  let cleaned = text.trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .replace(/^Here's the JSON:/i, '')
+    .replace(/^Analysis:/i, '')
+    .trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    console.log("Cleaned parse successful");
+    return parsed;
+  } catch (e) {
+    console.log("Cleaned parse failed:", e instanceof Error ? e.message : String(e));
+  }
+
+  // Find JSON object boundaries
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+
+  if (start !== -1 && end !== -1 && end > start) {
+    const candidate = cleaned.substring(start, end + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      console.log("Boundary parse successful");
+      return parsed;
+    } catch (e) {
+      console.log("Boundary parse failed:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  console.log("All parsing attempts failed");
+  return null;
 }
 
 export const analyzeDeck = action({
@@ -79,64 +123,218 @@ export const analyzeDeck = action({
         })
       )
     ),
+    // Accept but ignore to remain compatible with analyzer_v2 callers
+    includeAI: v.optional(v.boolean()),
   },
   handler: async (ctx, { tcg, format, deck, holdings }) => {
     "use node";
 
     const apiKey = process.env.GOOGLE_API_KEY;
     const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash"; // Faster model for better performance
+
+    console.log("API Key exists:", !!apiKey);
+    console.log("Model name:", modelName);
+
     if (!apiKey) {
       throw new Error("Missing GOOGLE_API_KEY environment variable.");
     }
 
-    const stats = computeStats(deck.cards as DeckCard[]);
+    const stats = computeStats(deck.cards as DeckCard[], tcg, format ?? null);
 
-    // Keep payload small — only include essentials for LLM context
+    // Optimized payload - reduce data size for faster processing
+    const deckCards = (deck.cards as DeckCard[]).slice(0, 500);
+
+    // Group cards by productId for more efficient analysis
+    const cardSummary = deckCards.reduce((acc, card) => {
+      const key = card.productId;
+      if (!acc[key]) {
+        acc[key] = { productId: card.productId, totalQuantity: 0, sections: [] };
+      }
+      acc[key].totalQuantity += card.quantity;
+      if (!acc[key].sections.includes(card.section || 'main')) {
+        acc[key].sections.push(card.section || 'main');
+      }
+      return acc;
+    }, {} as Record<number, { productId: number; totalQuantity: number; sections: string[] }>);
+
+    // Optimize holdings - only include high-value summary
+    const holdingsSummary = (holdings as Holding[] | undefined)?.slice(0, 100)
+      .filter(h => h.quantity > 0)
+      .map(h => ({ productId: h.productId, quantity: h.quantity })) ?? [];
+
     const payload = {
       tcg,
       format: format ?? null,
       deck: {
         name: deck.name ?? "Untitled Deck",
         stats,
-        cards: (deck.cards as DeckCard[]).slice(0, 500), // guard against extreme sizes
+        uniqueCards: Object.values(cardSummary).length,
+        cardSummary: Object.values(cardSummary).slice(0, 100), // Limit for performance
       },
-      holdings: (holdings as Holding[] | undefined)?.slice(0, 200) ?? [],
+      holdings: holdingsSummary,
     };
 
-    const systemInstructions = `You are a deck building assistant for trading card games (TCGs). 
-Return a concise JSON response with:
+    const systemInstructions = `Analyze this ${tcg}${format ? ` ${format}` : ''} deck and respond with JSON only. Do not include any markdown, explanations, or other text.
+
+JSON format:
 {
-  "analysis": {"summary": string, "strengths": string[], "weaknesses": string[]},
-  "issues": [ {"type": string, "detail": string, "severity": "error"|"warning" } ],
-  "suggestions": [ { "change": string, "rationale": string, "requiresPurchase": boolean } ],
-  "stats": { "bySection": Record<string, number>, "total": number, "unique": number }
-}
-Rules:
-- Consider tcg and format; mention assumptions if format-specific data is missing.
-- Prefer suggestions that use owned cards (provided in holdings) when possible.
-- If legality constraints are unknown, flag potential legality checks as warnings, not errors.
-- Keep output strictly valid JSON with no extra commentary.`;
+  "analysis": {
+    "summary": "Brief analysis",
+    "strengths": ["str1", "str2"],
+    "weaknesses": ["weak1", "weak2"]
+  },
+  "issues": [],
+  "suggestions": [
+    {"change": "suggestion", "rationale": "reason", "requiresPurchase": false}
+  ],
+  "stats": {"bySection": {}, "total": 0, "unique": 0}
+}`;
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: modelName });
-
-    const prompt = `${systemInstructions}\n\nDeck Payload:\n${JSON.stringify(payload, null, 2)}`;
-
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction: systemInstructions,
+      generationConfig: {
+        temperature: 0.0, // Max consistency
+        maxOutputTokens: 1024,
+        candidateCount: 1,
+        topP: 1,
+        topK: 1,
+        responseMimeType: "application/json",
+      },
     });
 
-    const text = typeof result?.response?.text === "function"
-      ? result.response.text()
-      : (result as any)?.response?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("\n") ?? "";
+    const promptData = JSON.stringify(payload); // Compact JSON
+    console.log("Sending prompt to AI:", `${promptData.substring(0, 200)}...`); // Debug
+
+    let result: any;
+    try {
+      // Add a timeout so we don't hang forever
+      const withTimeout = <T>(p: Promise<T>, ms: number) => new Promise<T>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`AI timeout after ${ms}ms`)), ms);
+        p.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
+      });
+      result = await withTimeout(model.generateContent({
+        contents: [{ role: "user", parts: [{ text: promptData }] }],
+      }), 15000);
+    } catch (err: any) {
+      console.error("AI generateContent failed:", err?.message || String(err));
+      const fallbackAi = {
+        analysis: {
+          summary: `This is a ${stats.total}-card ${tcg.toUpperCase()}${format ? ` ${format}` : ''} deck with ${stats.unique} unique cards.`,
+          strengths: (() => {
+            const target = getTargetMainSize(tcg, format)
+            const okSize = stats.total === target || (tcg === 'ygo' && stats.total >= 40 && stats.total <= 60)
+            const arr: string[] = []
+            if (okSize) arr.push('Proper deck size')
+            return arr
+          })(),
+          weaknesses: (() => {
+            const target = getTargetMainSize(tcg, format)
+            const arr: string[] = []
+            if (tcg === 'ygo') {
+              if (stats.total < 40) arr.push(`Deck too small (${stats.total}/40 cards)`) 
+              if (stats.total > 60) arr.push(`Deck too large (${stats.total}/60 max)`) 
+            } else {
+              if (stats.total < target) arr.push(`Deck too small (${stats.total}/${target} cards)`) 
+              if (stats.total > target && (tcg !== 'mtg' || (format || '').toLowerCase() !== 'commander')) arr.push(`Deck too large (${stats.total}/${target} target)`) 
+            }
+            // Only mention duplicates when threshold is active
+            const dupThreshold = (tcg === 'ygo') ? 3 : (tcg === 'pokemon' ? Infinity : ((format || '').toLowerCase() === 'commander' ? Infinity : 4))
+            if (dupThreshold < Infinity && stats.duplicates.length > 0) arr.push('Has cards with more than allowed copies')
+            return arr
+          })()
+        },
+        issues: [{ type: "API_ERROR", detail: err?.message || "AI call failed", severity: "warning" }],
+        suggestions: (() => {
+          const target = getTargetMainSize(tcg, format)
+          const sugg: any[] = []
+          if ((tcg !== 'ygo' && stats.total < target) || (tcg === 'ygo' && stats.total < 40)) {
+            sugg.push({ change: `Add more cards to reach ${tcg === 'ygo' ? 40 : target}`, rationale: 'Format deck size', requiresPurchase: true })
+          }
+          return sugg
+        })(),
+        stats,
+        raw: "AI call failed"
+      };
+      return { model: modelName, stats, ai: fallbackAi };
+    }
+
+    console.log("AI Response object:", JSON.stringify(result, null, 2)); // Debug full response
+
+    let text = "";
+    if (typeof result?.response?.text === "function") {
+      try {
+        text = result.response.text();
+      } catch (e) {
+        console.log("Error calling text() function:", e);
+      }
+    }
+
+    if (!text) {
+      // Try alternative response extraction
+      const candidates = (result as any)?.response?.candidates;
+      if (candidates && candidates.length > 0) {
+        const parts = candidates[0]?.content?.parts;
+        if (parts && Array.isArray(parts)) {
+          text = parts.map((p: any) => p.text || "").join("\n");
+        }
+      }
+    }
+
+    console.log("AI Raw Response:", text); // Debug logging
+    console.log("Response length:", text.length);
+
+    // If no response at all, provide a basic analysis fallback
+    if (!text || text.trim().length === 0) {
+      const fallbackAi = {
+        analysis: {
+          summary: `This is a ${stats.total}-card ${tcg.toUpperCase()}${format ? ` ${format}` : ''} deck with ${stats.unique} unique cards.`,
+          strengths: (() => {
+            const target = getTargetMainSize(tcg, format)
+            const okSize = stats.total === target || (tcg === 'ygo' && stats.total >= 40 && stats.total <= 60)
+            return okSize ? ["Proper deck size"] : []
+          })(),
+          weaknesses: (() => {
+            const target = getTargetMainSize(tcg, format)
+            const arr: string[] = []
+            if (tcg === 'ygo') {
+              if (stats.total < 40) arr.push(`Deck too small (${stats.total}/40 cards)`) 
+              if (stats.total > 60) arr.push(`Deck too large (${stats.total}/60 max)`) 
+            } else {
+              if (stats.total < target) arr.push(`Deck too small (${stats.total}/${target} cards)`) 
+              if (stats.total > target && (tcg !== 'mtg' || (format || '').toLowerCase() !== 'commander')) arr.push(`Deck too large (${stats.total}/${target} target)`) 
+            }
+            const dupThreshold = (tcg === 'ygo') ? 3 : (tcg === 'pokemon' ? Infinity : ((format || '').toLowerCase() === 'commander' ? Infinity : 4))
+            if (dupThreshold < Infinity && stats.duplicates.length > 0) arr.push('Has cards with more than allowed copies')
+            return arr
+          })()
+        },
+        issues: [{ type: "API_ERROR", detail: "AI service returned empty response", severity: "warning" }],
+        suggestions: (() => {
+          const target = getTargetMainSize(tcg, format)
+          const sugg: any[] = []
+          if ((tcg !== 'ygo' && stats.total < target) || (tcg === 'ygo' && stats.total < 40)) {
+            sugg.push({ change: `Add more cards to reach ${tcg === 'ygo' ? 40 : target}`, rationale: 'Format deck size', requiresPurchase: true })
+          }
+          return sugg
+        })(),
+        stats: stats,
+        raw: "Empty AI response"
+      };
+      console.log("Using fallback analysis:", fallbackAi);
+      return { model: modelName, stats, ai: fallbackAi };
+    }
 
     const ai = extractFirstJson(text) ?? {
-      analysis: { summary: "", strengths: [], weaknesses: [] },
-      issues: [{ type: "LLM_PARSE", detail: "Non-JSON response", severity: "warning" }],
+      analysis: { summary: "AI returned non-JSON response", strengths: [], weaknesses: [] },
+      issues: [{ type: "LLM_PARSE", detail: `Non-JSON response: ${text.substring(0, 200)}...`, severity: "warning" }],
       suggestions: [],
       raw: text,
       stats: stats,
     };
+
+    console.log("Parsed AI Result:", ai); // Debug logging
 
     return { model: modelName, stats, ai };
   },
@@ -181,13 +379,13 @@ export const buildDeck = action({
           - Use only cards legal in Commander (avoid banned list).`
         } else {
           ruleText = `Constructed MTG rules:
-          - Main deck target size ~${size} (60 typical) unless the format dictates otherwise.
+          - Main deck must be exactly ${size} cards unless the format dictates otherwise.
           - Up to 4 copies of a given non-basic card across main+sideboard.
           - Use only cards legal in ${format ?? 'the selected'} format (avoid banned/restricted).`
         }
       } else if (tcg === 'pokemon') {
         ruleText = `Pokemon TCG rules:
-        - 60 cards main deck.
+        - Exactly 60 cards in the main deck.
         - Up to 4 copies of the same named card, except basic energy cards can exceed 4.
         - Use only cards legal in ${format ?? 'the selected'} format.`
       } else if (tcg === 'ygo') {
@@ -199,6 +397,10 @@ export const buildDeck = action({
       }
     }
 
+    const preferOwnedLine = Array.isArray(holdings) && holdings.length > 0
+      ? `- Prefer cards the user ALREADY OWNS when possible. Owned list is provided with names and quantities.`
+      : ''
+
     const system = `You are an expert deck building assistant for trading card games.
 Return STRICT JSON:
 {
@@ -207,8 +409,8 @@ Return STRICT JSON:
 }
 Rules:
 - Consider TCG (${tcg}) and format (${format ?? "unknown"}). If uncertain, use sensible defaults.
-- Prefer cards the user ALREADY OWNS when possible. Owned list is provided with names and quantities.
-- Target approximately ${size} cards in the main deck (ignore sideboard/extra if not applicable).
+${preferOwnedLine}
+- Target exactly ${size} cards in the main deck (ignore sideboard/extra if not applicable).
 - Do not include card names that are fictional or non-existent.
 - Keep the JSON valid with no extra commentary.`
     + (ruleText ? `\n Format-Specific Rules:\n${ruleText}` : '')
@@ -222,11 +424,26 @@ Rules:
     };
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: modelName });
-    const prompt = `${system}\n\nUser Holdings (names with qty):\n${JSON.stringify(payload, null, 2)}`;
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction: system,
+      generationConfig: {
+        temperature: 0.0,
+        maxOutputTokens: 512,
+        candidateCount: 1,
+        topP: 1,
+        topK: 1,
+        responseMimeType: "application/json",
+      },
     });
+    const prompt = JSON.stringify(payload);
+    const withTimeout = <T>(p: Promise<T>, ms: number) => new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`AI timeout after ${ms}ms`)), ms);
+      p.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
+    });
+    const result = await withTimeout(model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    }), 15000);
     const text = typeof result?.response?.text === "function"
       ? result.response.text()
       : (result as any)?.response?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("\n") ?? "";

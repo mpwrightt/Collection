@@ -458,6 +458,15 @@ function isBadRequest(err: any): boolean {
   return /\b400\b/.test(err.message);
 }
 
+// Some TCGplayer search endpoints return 404 with a JSON body like
+// {"success":false,"errors":["No products were found."],"results":[]}
+// Treat these as empty results instead of hard errors for a smoother UX.
+function isNoProducts404(err: any): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = String(err.message || "").toLowerCase();
+  return msg.includes("404") && (msg.includes("no products were found") || /"results"\s*:\s*\[\s*\]/.test(msg));
+}
+
 function augmentSkuError(err: any, ids: number[]): Error {
   if (err instanceof Error) {
     const withContext = new Error(`${err.message} (productIds=${ids.join(',')})`);
@@ -553,7 +562,14 @@ export const searchProducts = action({
     if (groupId !== undefined) params.set("groupId", String(groupId));
     if (svc) {
       const url = `${svc}/products?${params.toString()}`;
-      return await fetchJson(url, { method: "GET" });
+      try {
+        return await fetchJson(url, { method: "GET" });
+      } catch (e: any) {
+        if (isNoProducts404(e)) {
+          return { Success: true, Results: [], results: [], data: [] };
+        }
+        throw e;
+      }
     }
     const clientId = process.env.TCGPLAYER_CLIENT_ID!;
     const clientSecret = process.env.TCGPLAYER_CLIENT_SECRET!;
@@ -562,7 +578,14 @@ export const searchProducts = action({
     await acquireSlotWithRetry(ctx, { provider: "tcgplayer", rate: 10, windowMs: 1000 });
     const { token, type } = await ensureBearerToken(ctx, clientId, clientSecret);
     const url = apiBase(version, `catalog/products?${params.toString()}`);
-    return await fetchJson(url, { method: "GET", headers: { Accept: "application/json", Authorization: `${type} ${token}` } });
+    try {
+      return await fetchJson(url, { method: "GET", headers: { Accept: "application/json", Authorization: `${type} ${token}` } });
+    } catch (e: any) {
+      if (isNoProducts404(e)) {
+        return { Success: true, Results: [], results: [], data: [] };
+      }
+      throw e;
+    }
   },
 });
 
