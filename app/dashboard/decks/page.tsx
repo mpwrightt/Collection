@@ -928,6 +928,7 @@ function DecksPageImpl() {
   const [aiBusy, setAiBusy] = React.useState(false)
   const [aiPlan, setAiPlan] = React.useState<string | null>(null)
   const [aiError, setAiError] = React.useState<string | null>(null)
+  const [aiProgress, setAiProgress] = React.useState<string | null>(null)
   const [aiEnforce, setAiEnforce] = React.useState(true)
   const [aiCommander, setAiCommander] = React.useState("")
 
@@ -1162,9 +1163,19 @@ function DecksPageImpl() {
   const handleAiBuild = React.useCallback(async () => {
     setAiBusy(true)
     setAiError(null)
+    setAiProgress("Generating deck strategy...")
     try {
-      // Build holdings by name for AI prompt (limit for payload size)
-      const ownedByName = (filteredHoldings.slice(0, 300)).map((h) => {
+      // Build optimized holdings by name for AI prompt (prioritize high-value/quantity cards)
+      const ownedByName = (filteredHoldings
+        .filter(h => h.quantity > 0) // Only include cards we actually own
+        .sort((a, b) => {
+          // Prioritize by quantity desc, then market price desc
+          const qtyDiff = (b.quantity ?? 0) - (a.quantity ?? 0)
+          if (qtyDiff !== 0) return qtyDiff
+          return (b.marketPrice ?? 0) - (a.marketPrice ?? 0)
+        })
+        .slice(0, 150) // Reduced from 300 for faster AI processing
+      ).map((h) => {
         const info = productInfo[String(h.productId)]
         const name = info?.name || `#${h.productId}`
         return { name, quantity: Number(h.quantity ?? 0) }
@@ -1185,44 +1196,75 @@ function DecksPageImpl() {
       } as any)
 
       setAiPlan(typeof result?.plan === 'string' ? result.plan : null)
+      setAiProgress("Finding cards in catalog...")
 
-      // Map AI card names to productIds via catalog search (prefer format-legal)
+      // Map AI card names to productIds via optimized batch search
       const suggested: Array<{ name: string; quantity: number; section: DeckSection }> = (result?.cards || [])
         .map((c: any) => ({ name: String(c.name), quantity: Number(c.quantity || 1), section: (c.section as DeckSection) || 'main' }))
 
       const additions: Array<{ productId: number; quantity: number; section: DeckSection }> = []
-      for (const s of suggested) {
-        try {
-          let payload: any
-          let list: any[] = []
-          if (currentDeck.format) {
-            // Try legal-first search
-            payload = await searchLegalProducts({
-              tcg: selectedTcg,
-              formatCode: currentDeck.format,
-              productName: s.name,
-              limit: 5,
-              offset: 0,
-              ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
-            } as any)
-            list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+
+      // Batch process card searches to improve performance
+      const batchSize = 5 // Process 5 cards at once
+      for (let i = 0; i < suggested.length; i += batchSize) {
+        const batch = suggested.slice(i, i + batchSize)
+        setAiProgress(`Finding cards... ${Math.min(i + batchSize, suggested.length)}/${suggested.length}`)
+
+        // Search all cards in batch concurrently
+        const searchPromises = batch.map(async (s) => {
+          try {
+            let payload: any
+            let list: any[] = []
+
+            if (currentDeck.format) {
+              // Try legal-first search
+              payload = await searchLegalProducts({
+                tcg: selectedTcg,
+                formatCode: currentDeck.format,
+                productName: s.name,
+                limit: 3, // Reduced from 5 for faster response
+                offset: 0,
+                ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}),
+              } as any)
+              list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+            }
+
+            if (!Array.isArray(list) || list.length === 0) {
+              // Fallback to general search
+              payload = await searchProducts({
+                productName: s.name,
+                limit: 3,
+                offset: 0,
+                ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {})
+              })
+              list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
+            }
+
+            const top = list[0]
+            const productId = Number(top?.productId ?? top?.ProductId)
+            if (Number.isFinite(productId) && productId > 0) {
+              return { productId, quantity: Math.max(1, Math.floor(s.quantity)), section: s.section }
+            }
+            return null
+          } catch (e) {
+            // ignore individual mapping errors
+            return null
           }
-          if (!Array.isArray(list) || list.length === 0) {
-            // Fallback to general search
-            payload = await searchProducts({ productName: s.name, limit: 5, offset: 0, ...(typeof currentTcgOption?.categoryId === 'number' ? { categoryId: currentTcgOption.categoryId } : {}) })
-            list = (payload as any)?.results || (payload as any)?.Results || (payload as any)?.data || []
-          }
-          const top = list[0]
-          const productId = Number(top?.productId ?? top?.ProductId)
-          if (Number.isFinite(productId) && productId > 0) {
-            additions.push({ productId, quantity: Math.max(1, Math.floor(s.quantity)), section: s.section })
-          }
-        } catch (e) {
-          // ignore individual mapping errors
+        })
+
+        // Wait for batch to complete
+        const batchResults = await Promise.all(searchPromises)
+        additions.push(...batchResults.filter((result): result is { productId: number; quantity: number; section: DeckSection } => result !== null))
+
+        // Small delay between batches to avoid overwhelming the API
+        if (i + batchSize < suggested.length) {
+          await new Promise(resolve => setTimeout(resolve, 100))
         }
       }
 
       if (additions.length === 0) return
+
+      setAiProgress("Adding cards to deck...")
 
       // Apply to current deck snapshot
       updateCurrentDeck((snapshot) => {
@@ -1256,6 +1298,7 @@ function DecksPageImpl() {
       setAiError(e?.message ?? 'Failed to build deck')
     } finally {
       setAiBusy(false)
+      setAiProgress(null)
     }
   }, [filteredHoldings, productInfo, searchProducts, buildDeck, selectedTcg, currentDeck, getTargetMainSize, updateCurrentDeck, holdingsByProduct, currentTcgOption, priceMap, aiGoal])
 
@@ -1844,7 +1887,7 @@ function DecksPageImpl() {
 
                         <Button onClick={handleAiBuild} disabled={aiBusy} className="w-full">
                           {aiBusy ? (
-                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />Building deck...</>
+                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />{aiProgress || "Building deck..."}</>
                           ) : (
                             <><Sparkles className="h-4 w-4 mr-2" />Build with AI</>
                           )}

@@ -84,7 +84,7 @@ export const analyzeDeck = action({
     "use node";
 
     const apiKey = process.env.GOOGLE_API_KEY;
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash"; // Faster model for better performance
     if (!apiKey) {
       throw new Error("Missing GOOGLE_API_KEY environment variable.");
     }
@@ -163,7 +163,7 @@ export const buildDeck = action({
     "use node";
 
     const apiKey = process.env.GOOGLE_API_KEY;
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash"; // Faster model for better performance
     if (!apiKey) throw new Error("Missing GOOGLE_API_KEY environment variable.");
 
     const size = typeof targetMainSize === "number" && targetMainSize > 0 ? targetMainSize : (tcg === "ygo" ? 40 : 60)
