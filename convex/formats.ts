@@ -19,20 +19,16 @@ type FormatDoc = {
   updatedAt: number;
 };
 
-async function findFormat(ctx: any, tcg: string, codeOrName?: string | null): Promise<FormatDoc | null> {
-  if (!codeOrName) return null;
-  const list = await ctx.db
-    .query("formats")
-    .withIndex("byTcg", (q: any) => q.eq("tcg", tcg))
-    .collect();
-  const needle = String(codeOrName).toLowerCase();
-  const match = list.find((f: any) => {
-    const c = (f.code ? String(f.code) : "").toLowerCase();
-    const n = (f.name ? String(f.name) : "").toLowerCase();
-    return c === needle || n === needle;
-  });
-  return (match as FormatDoc) || null;
-}
+// Helper query to get all formats for a TCG
+export const getFormatsByTcg = query({
+  args: { tcg: v.string() },
+  handler: async (ctx, { tcg }) => {
+    return await ctx.db
+      .query("formats")
+      .withIndex("byTcg", (q: any) => q.eq("tcg", tcg))
+      .collect();
+  },
+});
 
 // Admin: upsert a format and its rules
 export const upsertFormat = mutation({
@@ -60,7 +56,16 @@ export const upsertFormat = mutation({
 export const getFormat = query({
   args: { tcg: v.string(), codeOrName: v.string() },
   handler: async (ctx, { tcg, codeOrName }) => {
-    const fmt = await findFormat(ctx, tcg, codeOrName);
+    const list = await ctx.db
+      .query("formats")
+      .withIndex("byTcg", (q: any) => q.eq("tcg", tcg))
+      .collect();
+    const needle = String(codeOrName).toLowerCase();
+    const fmt = list.find((f: any) => {
+      const c = (f.code ? String(f.code) : "").toLowerCase();
+      const n = (f.name ? String(f.name) : "").toLowerCase();
+      return c === needle || n === needle;
+    });
     return fmt ? { _id: fmt._id, tcg: fmt.tcg, name: fmt.name, code: fmt.code ?? null, rules: fmt.rules ?? {} } : null;
   },
 });
@@ -77,7 +82,18 @@ export const searchLegalProducts = action({
   },
   handler: async (ctx, { tcg, formatCode, productName, categoryId, limit = 30, offset = 0 }) => {
     'use node';
-    let fmt = await findFormat(ctx, tcg, formatCode);
+
+    // Find format by inlining the logic to avoid api reference issues
+    let fmt: FormatDoc | null = null;
+    if (formatCode) {
+      const formatsList = await ctx.runQuery(api.formats.getFormatsByTcg, { tcg });
+      const needle = String(formatCode).toLowerCase();
+      fmt = formatsList.find((f: any) => {
+        const c = (f.code ? String(f.code) : "").toLowerCase();
+        const n = (f.name ? String(f.name) : "").toLowerCase();
+        return c === needle || n === needle;
+      }) || null;
+    }
     // If pokemon standard with missing rules, attempt to compute legal groups (SV-era) and persist
     if (
       (!fmt || !fmt.rules || !Array.isArray(fmt.rules.legalGroupIds) || fmt.rules.legalGroupIds.length === 0) &&
@@ -104,7 +120,14 @@ export const searchLegalProducts = action({
             code: 'standard',
             rules: { ...(fmt?.rules ?? {}), legalGroupIds: Array.from(new Set(allowedIds)) },
           } as any)
-          fmt = await findFormat(ctx, tcg, formatCode)
+          // Re-fetch the updated format after upserting
+          const formatsList = await ctx.runQuery(api.formats.getFormatsByTcg, { tcg });
+          const needle = String(formatCode).toLowerCase();
+          fmt = formatsList.find((f: any) => {
+            const c = (f.code ? String(f.code) : "").toLowerCase();
+            const n = (f.name ? String(f.name) : "").toLowerCase();
+            return c === needle || n === needle;
+          }) || null;
         }
       } catch {}
     }
@@ -151,7 +174,18 @@ export const validateDeckLegality = action({
   },
   handler: async (ctx, { tcg, formatCode, cards }) => {
     'use node';
-    const fmt = await findFormat(ctx, tcg, formatCode);
+
+    // Find format by inlining the logic to avoid api reference issues
+    let fmt: FormatDoc | null = null;
+    if (formatCode) {
+      const formatsList = await ctx.runQuery(api.formats.getFormatsByTcg, { tcg });
+      const needle = String(formatCode).toLowerCase();
+      fmt = formatsList.find((f: any) => {
+        const c = (f.code ? String(f.code) : "").toLowerCase();
+        const n = (f.name ? String(f.name) : "").toLowerCase();
+        return c === needle || n === needle;
+      }) || null;
+    }
     if (!fmt || !fmt.rules) return { issues: [] };
 
     const allowedGroups: Set<number> = new Set<number>(

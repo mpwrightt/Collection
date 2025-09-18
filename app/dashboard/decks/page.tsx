@@ -9,9 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Sparkles, Plus, Minus, Trash2, Search, Loader2, Filter, ShoppingCart, Save } from "lucide-react"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Sparkles, Plus, Minus, Trash2, Search, Loader2, Filter, ShoppingCart, Save, Package, DollarSign } from "lucide-react"
 import { CardDetailsModal } from "@/components/collections/card-details-modal"
 import { setColorOverrides } from "@/lib/setColors"
 import Link from "next/link"
@@ -213,6 +212,18 @@ type AnalysisState = {
 function DecksPageImpl() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  // Persisted Deck Tools tab via ?tool=collection|catalog|ai
+  const initialTool = React.useMemo(() => {
+    const q = (searchParams?.get('tool') || 'collection').toLowerCase()
+    return ['collection','catalog','ai'].includes(q) ? q : 'collection'
+  }, [searchParams])
+  const [activeTool, setActiveTool] = React.useState<string>(initialTool)
+  const setActiveToolAndUrl = React.useCallback((val: string) => {
+    setActiveTool(val)
+    const sp = new URLSearchParams(searchParams?.toString() || '')
+    sp.set('tool', val)
+    router.replace(`?${sp.toString()}`)
+  }, [router, searchParams])
   const [selectedTcg, setSelectedTcg] = React.useState<string>(TCG_OPTIONS[0]?.value ?? "mtg")
   const [deckSnapshots, setDeckSnapshots] = React.useState<Record<string, DeckSnapshot>>(() => {
     const initial: Record<string, DeckSnapshot> = {}
@@ -649,6 +660,46 @@ function DecksPageImpl() {
     [searchQuery, searchProducts, searchLegalProducts, currentTcgOption, currentDeck.format, selectedTcg]
   )
 
+  // Target section selector for Deck Tools (synced with active section)
+  const [toolTargetSection, setToolTargetSection] = React.useState<DeckSection>("main")
+  React.useEffect(() => {
+    if (toolTargetSection !== activeSection) {
+      setToolTargetSection(activeSection)
+    }
+  }, [activeSection, toolTargetSection])
+
+  // Scroll position preservation for deck sections
+  const deckScrollRef = React.useRef<HTMLDivElement>(null)
+  const deckScrollPositions = React.useRef<Record<DeckSection, number>>({
+    main: 0,
+    sideboard: 0,
+    extra: 0
+  })
+
+  // Handle section changes with scroll preservation
+  const handleSectionChange = React.useCallback((section: DeckSection) => {
+    // Save current scroll position
+    if (deckScrollRef.current) {
+      deckScrollPositions.current[activeSection] = deckScrollRef.current.scrollTop
+    }
+
+    // Update active section
+    setActiveSection(section)
+
+    // Restore scroll position after content renders
+    setTimeout(() => {
+      if (deckScrollRef.current) {
+        deckScrollRef.current.scrollTop = deckScrollPositions.current[section]
+      }
+    }, 50)
+  }, [activeSection])
+
+  // Also sync the other way - when tool target changes, update active section
+  const handleToolTargetChange = React.useCallback((section: DeckSection) => {
+    setToolTargetSection(section)
+    handleSectionChange(section)
+  }, [handleSectionChange])
+
   const handleAddFromHolding = React.useCallback(
     (holding: AggregatedHolding) => {
       const productId = Number(holding.productId)
@@ -661,7 +712,7 @@ function DecksPageImpl() {
         setProductInfo((prev) => ({ ...prev, [key]: prev[key] ?? info }))
       }
       updateCurrentDeck((snapshot) => {
-        const id = deckKey(productId, skuId, activeSection)
+        const id = deckKey(productId, skuId, toolTargetSection)
         const index = snapshot.cards.findIndex((card) => card.id === id)
         const holdingsQuantity = Number(holding.quantity ?? 0)
         if (index >= 0) {
@@ -679,7 +730,7 @@ function DecksPageImpl() {
             id,
             productId,
             skuId,
-            section: activeSection,
+            section: toolTargetSection,
             quantity: 1,
             holdingsQuantity,
             name: info?.name ?? `#${productId}`,
@@ -693,7 +744,7 @@ function DecksPageImpl() {
         return { ...snapshot, cards: nextCards }
       })
     },
-    [activeSection, productInfo, setProductInfo, updateCurrentDeck, currentTcgOption]
+    [toolTargetSection, productInfo, setProductInfo, updateCurrentDeck, currentTcgOption]
   )
 
   const handleAddFromSearch = React.useCallback(
@@ -703,7 +754,7 @@ function DecksPageImpl() {
       const info = await ensureProductInfo(productId)
       const skuId = card?.skuId ? Number(card.skuId) : null
       updateCurrentDeck((snapshot) => {
-        const id = deckKey(productId, skuId, activeSection)
+        const id = deckKey(productId, skuId, toolTargetSection)
         const index = snapshot.cards.findIndex((item) => item.id === id)
         const holdingsAggregate = holdingsByProduct.get(productId)
         const holdingsQuantity = holdingsAggregate?.quantity ?? 0
@@ -734,7 +785,7 @@ function DecksPageImpl() {
             id,
             productId,
             skuId,
-            section: activeSection,
+            section: toolTargetSection,
             quantity: 1,
             holdingsQuantity,
             name: info.name,
@@ -747,7 +798,7 @@ function DecksPageImpl() {
         return { ...snapshot, cards: nextCards }
       })
     },
-    [activeSection, ensureProductInfo, updateCurrentDeck, holdingsByProduct, priceMap, currentTcgOption]
+    [toolTargetSection, ensureProductInfo, updateCurrentDeck, holdingsByProduct, priceMap, currentTcgOption]
   )
 
   const handleAdjustQuantity = React.useCallback(
@@ -794,6 +845,7 @@ function DecksPageImpl() {
     const unique = new Set<string>()
     let missingCopies = 0
     let missingCost = 0
+    let deckValue = 0
     for (const card of deckCards) {
       bySection[card.section] = (bySection[card.section] ?? 0) + card.quantity
       unique.add(`${card.productId}:${card.skuId ?? "_"}`)
@@ -801,6 +853,9 @@ function DecksPageImpl() {
       const missing = Math.max(0, card.quantity - holdingsQuantity)
       missingCopies += missing
       const price = priceMap[String(card.productId)] ?? card.marketPrice
+      if (typeof price === 'number') {
+        deckValue += price * (card.quantity || 0)
+      }
       if (missing > 0 && typeof price === "number") {
         missingCost += missing * price
       }
@@ -812,6 +867,7 @@ function DecksPageImpl() {
       bySection,
       missingCopies,
       missingCost,
+      value: deckValue,
     }
   }, [deckCards, priceMap])
 
@@ -874,6 +930,42 @@ function DecksPageImpl() {
   const [aiError, setAiError] = React.useState<string | null>(null)
   const [aiEnforce, setAiEnforce] = React.useState(true)
   const [aiCommander, setAiCommander] = React.useState("")
+
+  // Scroll position preservation for tabs
+  const collectionScrollRef = React.useRef<HTMLDivElement>(null)
+  const catalogScrollRef = React.useRef<HTMLDivElement>(null)
+  const aiScrollRef = React.useRef<HTMLDivElement>(null)
+  const scrollPositions = React.useRef({
+    collection: 0,
+    catalog: 0,
+    ai: 0
+  })
+
+  // Save scroll position when switching tabs
+  const handleTabChange = React.useCallback((newTab: string) => {
+    // Save current scroll position from the div elements
+    if (activeTool === 'collection' && collectionScrollRef.current) {
+      scrollPositions.current.collection = collectionScrollRef.current.scrollTop
+    } else if (activeTool === 'catalog' && catalogScrollRef.current) {
+      scrollPositions.current.catalog = catalogScrollRef.current.scrollTop
+    } else if (activeTool === 'ai' && aiScrollRef.current) {
+      scrollPositions.current.ai = aiScrollRef.current.scrollTop
+    }
+
+    // Change tab
+    setActiveToolAndUrl(newTab)
+
+    // Restore scroll position after a brief delay to allow tab content to render
+    setTimeout(() => {
+      if (newTab === 'collection' && collectionScrollRef.current) {
+        collectionScrollRef.current.scrollTop = scrollPositions.current.collection
+      } else if (newTab === 'catalog' && catalogScrollRef.current) {
+        catalogScrollRef.current.scrollTop = scrollPositions.current.catalog
+      } else if (newTab === 'ai' && aiScrollRef.current) {
+        aiScrollRef.current.scrollTop = scrollPositions.current.ai
+      }
+    }, 50)
+  }, [activeTool, setActiveToolAndUrl])
 
   const handleSaveDeck = React.useCallback(async () => {
     setSaving(true)
@@ -1168,47 +1260,78 @@ function DecksPageImpl() {
   }, [filteredHoldings, productInfo, searchProducts, buildDeck, selectedTcg, currentDeck, getTargetMainSize, updateCurrentDeck, holdingsByProduct, currentTcgOption, priceMap, aiGoal])
 
   return (
-    <div className="px-4 lg:px-6 space-y-6">
-      <Card>
-        <CardHeader className="space-y-4">
-          <div className="flex items-center gap-3">
-            <CardTitle className="flex-1">Deck Builder</CardTitle>
-            <Link href="/dashboard/decks/saved">
-              <Button variant="outline">My Decks</Button>
-            </Link>
-            <Button variant="outline" onClick={handleNewDeck} disabled={saving || deleting}>
-              New
-            </Button>
-            <Button onClick={handleSaveDeck} disabled={saving}>
-              {saving ? (
-                <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Saving...</span>
-              ) : (
-                <span className="flex items-center gap-2"><Save className="h-4 w-4" /> Save Deck</span>
+    <div className="min-h-screen bg-gradient-to-br from-background to-muted/20">
+      {/* Modern Header */}
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50">
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
+                Deck Builder
+              </h1>
+              <div className="hidden sm:flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="px-2 py-1 bg-muted rounded-full">{currentDeck.name || 'Untitled Deck'}</span>
+                <span>•</span>
+                <span className="px-2 py-1 bg-primary/10 text-primary rounded-full">
+                  {currentTcgOption?.label || 'No Game'}
+                </span>
+                {currentDeck.format && (
+                  <>
+                    <span>•</span>
+                    <span className="px-2 py-1 bg-blue-500/10 text-blue-600 rounded-full">
+                      {formatOptions.find(f => f.value === currentDeck.format)?.label || currentDeck.format}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link href="/dashboard/decks/saved">
+                <Button variant="ghost" size="sm">My Decks</Button>
+              </Link>
+              <Button variant="ghost" size="sm" onClick={handleNewDeck} disabled={saving || deleting}>
+                New
+              </Button>
+              <Button size="sm" onClick={handleSaveDeck} disabled={saving}>
+                {saving ? (
+                  <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving...</>
+                ) : (
+                  <><Save className="h-4 w-4 mr-2" />Save</>
+                )}
+              </Button>
+              {currentDeckId && (
+                <Button variant="destructive" size="sm" onClick={handleDeleteDeck} disabled={deleting}>
+                  {deleting ? (
+                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Deleting...</>
+                  ) : (
+                    <><Trash2 className="h-4 w-4 mr-2" />Delete</>
+                  )}
+                </Button>
               )}
-            </Button>
-            <Button variant="destructive" onClick={handleDeleteDeck} disabled={!currentDeckId || deleting}>
-              {deleting ? (
-                <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Deleting...</span>
-              ) : (
-                <span className="flex items-center gap-2"><Trash2 className="h-4 w-4" /> Delete</span>
-              )}
-            </Button>
+            </div>
           </div>
-          <div className="grid gap-4 lg:grid-cols-3">
+        </div>
+      </div>
+
+      {/* Deck Configuration Panel (Collapsible) */}
+      <div className="px-6 py-4 border-b bg-muted/30">
+        <div className="max-w-4xl mx-auto">
+          <div className="grid gap-4 md:grid-cols-3">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Deck Name</label>
+              <label className="text-sm font-medium">Deck Name</label>
               <Input
                 value={currentDeck.name}
                 onChange={(event) =>
                   updateCurrentDeck((snapshot) => ({ ...snapshot, name: event.target.value }))
                 }
-                placeholder="Untitled Deck"
+                placeholder="Enter deck name"
+                className="bg-background"
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Trading Card Game</label>
+              <label className="text-sm font-medium">Game</label>
               <Select value={selectedTcg} onValueChange={setSelectedTcg}>
-                <SelectTrigger>
+                <SelectTrigger className="bg-background">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1221,14 +1344,14 @@ function DecksPageImpl() {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Format</label>
+              <label className="text-sm font-medium">Format</label>
               <Select
                 value={currentDeck.format ?? ""}
                 onValueChange={(value) =>
                   updateCurrentDeck((snapshot) => ({ ...snapshot, format: value || null }))
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger className="bg-background">
                   <SelectValue placeholder="Select format" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1245,258 +1368,519 @@ function DecksPageImpl() {
               </Select>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-sm text-muted-foreground">
-              Active section for new cards:
-            </div>
-            <div className="flex items-center gap-2">
-              {allowedSections.map((section) => (
-                <Button
-                  key={section}
-                  size="sm"
-                  variant={activeSection === section ? "default" : "outline"}
-                  onClick={() => setActiveSection(section)}
-                >
-                  {SECTION_LABELS[section]}
-                </Button>
-              ))}
-            </div>
-            <div className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-              <Filter className="h-4 w-4" />
-              <span>Only show cards that need to be bought</span>
-              <Switch
-                checked={showMissingOnly}
-                onCheckedChange={setShowMissingOnly}
-                aria-label="Toggle missing cards filter"
-              />
-            </div>
-          </div>
-        </CardHeader>
-      </Card>
+        </div>
+      </div>
 
-      <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <div className="space-y-6">
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>Deck List</CardTitle>
-              <div className="text-sm text-muted-foreground">
-                {deckStats.total} cards • {deckStats.unique} unique • Missing {deckStats.missingCopies}
+      {/* Stats Overview */}
+      <div className="px-6 py-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-8">
+            <Card className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border-blue-200/20">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-blue-600 text-sm font-medium">Total Cards</p>
+                    <p className="text-2xl font-bold text-blue-700">{deckStats.total}</p>
+                  </div>
+                  <div className="h-8 w-8 bg-blue-500/20 rounded-lg flex items-center justify-center">
+                    <Package className="h-4 w-4 text-blue-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border-emerald-200/20">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-emerald-600 text-sm font-medium">Unique Cards</p>
+                    <p className="text-2xl font-bold text-emerald-700">{deckStats.unique}</p>
+                  </div>
+                  <div className="h-8 w-8 bg-emerald-500/20 rounded-lg flex items-center justify-center">
+                    <Sparkles className="h-4 w-4 text-emerald-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-gradient-to-br from-orange-500/10 to-orange-600/5 border-orange-200/20">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-orange-600 text-sm font-medium">Missing Cards</p>
+                    <p className="text-2xl font-bold text-orange-700">{deckStats.missingCopies}</p>
+                  </div>
+                  <div className="h-8 w-8 bg-orange-500/20 rounded-lg flex items-center justify-center">
+                    <ShoppingCart className="h-4 w-4 text-orange-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-gradient-to-br from-purple-500/10 to-purple-600/5 border-purple-200/20">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-purple-600 text-sm font-medium">Missing Cost</p>
+                    <p className="text-2xl font-bold text-purple-700">{formatCurrency(deckStats.missingCost)}</p>
+                  </div>
+                  <div className="h-8 w-8 bg-purple-500/20 rounded-lg flex items-center justify-center">
+                    <DollarSign className="h-4 w-4 text-purple-600" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="px-6 pb-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+            {/* Deck List */}
+            <div className="space-y-6">
+              {/* Section Controls */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-xl font-semibold">Deck Cards</h2>
+                  <div className="flex items-center gap-2">
+                    {allowedSections.map((section) => (
+                      <Button
+                        key={section}
+                        size="sm"
+                        variant={activeSection === section ? "default" : "outline"}
+                        onClick={() => handleSectionChange(section)}
+                        className="h-8"
+                      >
+                        {SECTION_LABELS[section]}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Filter className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">Show missing only</span>
+                  <Switch
+                    checked={showMissingOnly}
+                    onCheckedChange={setShowMissingOnly}
+                  />
+                </div>
               </div>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {allowedSections.map((section) => {
-                const cards = deckCardsBySection[section]
-                return (
-                  <div key={section} className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-base font-semibold">{SECTION_LABELS[section]}</h3>
-                      <span className="text-sm text-muted-foreground">
-                        {cards.reduce((total, card) => total + card.quantity, 0)} cards
-                      </span>
+
+              {/* Unified Deck Section */}
+              <Card className="overflow-hidden">
+                <CardHeader className="bg-muted/30 border-b">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-lg">{SECTION_LABELS[activeSection]}</CardTitle>
+                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                      <span>{deckCardsBySection[activeSection].reduce((total, card) => total + card.quantity, 0)} cards</span>
+                      <span>•</span>
+                      <span>{deckCardsBySection[activeSection].length} unique</span>
                     </div>
-                    {cards.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-                        No cards yet. Add cards from your holdings or search the catalog.
+                  </div>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="max-h-[600px] overflow-y-auto" ref={deckScrollRef}>
+                    {deckCardsBySection[activeSection].length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <div className="h-16 w-16 bg-muted rounded-full flex items-center justify-center mb-4">
+                        <Plus className="h-8 w-8 text-muted-foreground" />
                       </div>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Card</TableHead>
-                              <TableHead className="w-32">Quantity</TableHead>
-                              <TableHead className="w-52">Ownership</TableHead>
-                              <TableHead className="w-32">Market</TableHead>
-                              <TableHead className="w-12 text-right">Remove</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {cards.map((card) => {
-                              const key = String(card.productId)
-                              const info = productInfo[key]
-                              const imageUrl = card.imageUrl ?? info?.imageUrl ?? fallbackImage(card.productId)
-                              const name = info?.name ?? card.name ?? `#${card.productId}`
-                              const setName = info?.setName
-                              const holdingsQuantity = card.holdingsQuantity ?? 0
-                              const owned = Math.min(card.quantity, holdingsQuantity)
-                              const missing = Math.max(0, card.quantity - holdingsQuantity)
-                              const marketPrice = priceMap[key] ?? card.marketPrice
-                              const estimated =
-                                missing > 0 && typeof marketPrice === "number"
-                                  ? formatCurrency(marketPrice * missing)
-                                  : "—"
-                              return (
-                                <TableRow key={card.id}>
-                                  <TableCell>
-                                    <div className="flex items-center gap-3">
-                                      <button
-                                        type="button"
-                                        onClick={() => openDetails(card)}
-                                        className="h-14 w-10 overflow-hidden rounded border bg-muted focus:outline-none focus:ring-2 focus:ring-primary"
-                                        aria-label="View card details"
-                                      >
-                                        <img
-                                          src={imageUrl}
-                                          alt={name}
-                                          className="h-full w-full object-cover"
-                                        />
-                                      </button>
-                                      <div className="space-y-1">
-                                        <button type="button" onClick={() => openDetails(card)} className="text-left">
-                                          <div className="text-sm font-medium leading-tight hover:underline">{name}</div>
-                                          {setName ? (
-                                            <div className="text-xs text-muted-foreground flex items-center gap-1">
-                                              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: info?.setColor || 'var(--muted-foreground)' }} />
-                                              {setName}
-                                              {info?.setAbbr && (
-                                                <span className="uppercase opacity-70">({info.setAbbr})</span>
-                                              )}
-                                            </div>
-                                          ) : null}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </TableCell>
-                                  <TableCell>
-                                    <div className="flex items-center gap-2">
-                                      <Button
-                                        size="icon"
-                                        variant="ghost"
-                                        onClick={() => handleAdjustQuantity(card.id, -1)}
-                                        aria-label="Decrease quantity"
-                                      >
-                                        <Minus className="h-4 w-4" />
-                                      </Button>
-                                      <span className="w-8 text-center text-sm font-medium">
-                                        {card.quantity}
-                                      </span>
-                                      <Button
-                                        size="icon"
-                                        variant="ghost"
-                                        onClick={() => handleAdjustQuantity(card.id, 1)}
-                                        aria-label="Increase quantity"
-                                      >
-                                        <Plus className="h-4 w-4" />
-                                      </Button>
-                                    </div>
-                                  </TableCell>
-                                  <TableCell>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <Badge variant="secondary">Owned {owned}</Badge>
-                                      {missing > 0 && (
-                                        <Badge variant="destructive" className="inline-flex items-center gap-1">
-                                          <ShoppingCart className="h-3 w-3" />Need {missing}
-                                        </Badge>
+                      <h3 className="font-medium text-lg mb-2">No cards in {SECTION_LABELS[activeSection]}</h3>
+                      <p className="text-muted-foreground mb-4">Add cards from your collection or search the catalog</p>
+                      <p className="text-sm text-muted-foreground">Use the tools on the right to add cards to this section</p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {deckCardsBySection[activeSection].map((card) => {
+                        const key = String(card.productId)
+                        const info = productInfo[key]
+                        const imageUrl = card.imageUrl ?? info?.imageUrl ?? fallbackImage(card.productId)
+                        const name = info?.name ?? card.name ?? `#${card.productId}`
+                        const setName = info?.setName
+                        const holdingsQuantity = card.holdingsQuantity ?? 0
+                        const owned = Math.min(card.quantity, holdingsQuantity)
+                        const missing = Math.max(0, card.quantity - holdingsQuantity)
+                        const marketPrice = priceMap[key] ?? card.marketPrice
+                        const totalValue = typeof marketPrice === "number" ? marketPrice * card.quantity : 0
+
+                        return (
+                          <div key={card.id} className="group relative bg-background border rounded-lg p-3 hover:shadow-md transition-all duration-200">
+                            {/* Card Image */}
+                            <div className="relative mb-3">
+                              <button
+                                type="button"
+                                onClick={() => openDetails(card)}
+                                className="w-full aspect-[3/4] rounded-md overflow-hidden bg-muted hover:scale-105 transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-primary"
+                              >
+                                <img
+                                  src={imageUrl}
+                                  alt={name}
+                                  className="w-full h-full object-cover"
+                                />
+                              </button>
+                              {/* Quantity Badge */}
+                              <div className="absolute top-2 right-2 bg-black/80 text-white text-xs px-2 py-1 rounded-full font-medium">
+                                ×{card.quantity}
+                              </div>
+                              {/* Missing Badge */}
+                              {missing > 0 && (
+                                <div className="absolute top-2 left-2 bg-orange-500 text-white text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1">
+                                  <ShoppingCart className="h-3 w-3" />
+                                  {missing}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Card Info */}
+                            <div className="space-y-2">
+                              <button
+                                type="button"
+                                onClick={() => openDetails(card)}
+                                className="w-full text-left"
+                              >
+                                <h4 className="font-medium text-sm leading-tight hover:text-primary transition-colors">{name}</h4>
+                                {setName && (
+                                  <div className="flex items-center gap-1 mt-1">
+                                    <span
+                                      className="inline-block h-2 w-2 rounded-full"
+                                      style={{ backgroundColor: info?.setColor || 'var(--muted-foreground)' }}
+                                    />
+                                    <span className="text-xs text-muted-foreground">
+                                      {setName}
+                                      {info?.setAbbr && (
+                                        <span className="uppercase opacity-70 ml-1">({info.setAbbr})</span>
                                       )}
-                                    </div>
-                                  </TableCell>
-                                  <TableCell>
-                                    <div className="space-y-1">
-                                      <div className="text-sm font-medium">
-                                        {typeof marketPrice === "number"
-                                          ? formatCurrency(marketPrice)
-                                          : "—"}
-                                      </div>
-                                      <div className="text-xs text-muted-foreground">
-                                        {missing > 0 ? `Missing total: ${estimated}` : "Fully owned"}
-                                      </div>
-                                    </div>
-                                  </TableCell>
-                                  <TableCell className="text-right">
-                                    <Button
-                                      size="icon"
-                                      variant="ghost"
-                                      onClick={() => handleRemoveCard(card.id)}
-                                      aria-label="Remove card"
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            })}
-                          </TableBody>
-                        </Table>
+                                    </span>
+                                  </div>
+                                )}
+                              </button>
+
+                              {/* Price Info */}
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-muted-foreground">Market</span>
+                                <span className="font-medium">
+                                  {typeof marketPrice === "number" ? formatCurrency(marketPrice) : "—"}
+                                </span>
+                              </div>
+
+                              {totalValue > 0 && (
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-muted-foreground">Total Value</span>
+                                  <span className="font-medium text-green-600">{formatCurrency(totalValue)}</span>
+                                </div>
+                              )}
+
+                              {/* Ownership Status */}
+                              <div className="flex items-center gap-1">
+                                {owned > 0 && (
+                                  <Badge variant="secondary" className="text-xs h-5">
+                                    Owned {owned}
+                                  </Badge>
+                                )}
+                                {missing > 0 && (
+                                  <Badge variant="destructive" className="text-xs h-5">
+                                    Need {missing}
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Card Controls */}
+                            <div className="mt-3 flex items-center justify-between">
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7"
+                                  onClick={() => handleAdjustQuantity(card.id, -1)}
+                                >
+                                  <Minus className="h-3 w-3" />
+                                </Button>
+                                <span className="text-sm font-medium w-8 text-center">{card.quantity}</span>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7"
+                                  onClick={() => handleAdjustQuantity(card.id, 1)}
+                                >
+                                  <Plus className="h-3 w-3" />
+                                </Button>
+                              </div>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                onClick={() => handleRemoveCard(card.id)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                        )
+                      })}
                       </div>
                     )}
                   </div>
-                )
-              })}
-            </CardContent>
-          </Card>
+                </CardContent>
+              </Card>
+            </div>
+            {/* Deck Tools Sidebar */}
+            <div className="space-y-6">
+              <Card className="sticky top-24">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5" />
+                    Deck Tools
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Add cards from your collection, search the catalog, or let AI build for you.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Target Section */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Add cards to</label>
+                    <div className="flex gap-1">
+                      {allowedSections.map((s) => (
+                        <Button
+                          key={s}
+                          size="sm"
+                          variant={toolTargetSection === s ? "default" : "outline"}
+                          onClick={() => handleToolTargetChange(s)}
+                          className="flex-1"
+                        >
+                          {SECTION_LABELS[s]}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
 
-          <Card>
-            <CardHeader className="space-y-2">
-              <CardTitle>Search Catalog</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Need something new? Find cards outside your collection and mark them as purchases.
-              </p>
-              <form onSubmit={handleSearch} className="flex gap-2">
-                <Input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search by card name"
-                />
-                <Button type="submit" disabled={searching}>
-                  {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                </Button>
-              </form>
-              {searchError && (
-                <div className="text-sm text-destructive">{searchError}</div>
-              )}
-            </CardHeader>
-            <CardContent>
-              {searchResults.length === 0 ? (
-                <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">
-                  Search for a card to start adding it to your deck.
-                </div>
-              ) : (
-                <ScrollArea className="h-[400px] pr-4">
-                  <div className="space-y-3">
-                    {searchResults.map((result) => {
-                      const productId = Number(result?.productId ?? result?.ProductId)
-                      if (!Number.isFinite(productId)) return null
-                      const key = String(productId)
-                      const info = productInfo[key]
-                      const name = info?.name ?? result?.name ?? result?.productName ?? `#${productId}`
-                      const setName = info?.setName ?? result?.groupName ?? result?.setName
-                      const dot = info?.setColor
-                      const imageUrl = info?.imageUrl ?? fallbackImage(productId)
-                      return (
-                        <div key={key} className="flex items-center gap-3 rounded-md border p-3">
-                          <div className="h-14 w-10 overflow-hidden rounded bg-muted">
-                            <img
-                              src={imageUrl}
-                              alt={name}
-                              className="h-full w-full object-cover"
+                  {/* Deck Value Summary */}
+                  <div className="space-y-2 p-3 bg-muted/30 rounded-lg">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Deck Value</span>
+                      <span className="font-semibold">{formatCurrency(deckStats.value)}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Missing Cost</span>
+                      <span className="font-semibold text-orange-600">{formatCurrency(deckStats.missingCost)}</span>
+                    </div>
+                  </div>
+
+                  {/* Tools Tabs */}
+                  <Tabs value={activeTool} onValueChange={handleTabChange} className="w-full">
+                    <TabsList className="grid w-full grid-cols-3">
+                      <TabsTrigger value="collection" className="text-xs">Collection</TabsTrigger>
+                      <TabsTrigger value="catalog" className="text-xs">Catalog</TabsTrigger>
+                      <TabsTrigger value="ai" className="text-xs">AI</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="collection" className="mt-4">
+                      <div className="space-y-4">
+                        <Input
+                          value={holdingsSearch}
+                          onChange={(e) => setHoldingsSearch(e.target.value)}
+                          placeholder="Search your collection..."
+                          className="w-full"
+                        />
+
+                        <div className="h-[500px] overflow-y-auto" ref={collectionScrollRef}>
+                          {holdingsDisplay.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                              <div className="h-12 w-12 bg-muted rounded-full flex items-center justify-center mb-4">
+                                <Search className="h-6 w-6 text-muted-foreground" />
+                              </div>
+                              <p className="text-muted-foreground">
+                                {holdingsSearch ? 'No matching cards found' : 'No cards in your collection for this game'}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {holdingsDisplay.map((row) => {
+                                const key = `${row.productId}:${row.skuId ?? '_'}`
+                                const info = productInfo[String(row.productId)]
+                                const name = info?.name ?? `#${row.productId}`
+                                const setName = info?.setName
+                                const imageUrl = info?.imageUrl ?? fallbackImage(row.productId)
+                                return (
+                                  <div key={key} className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors">
+                                    <div className="h-12 w-9 rounded overflow-hidden bg-muted">
+                                      <img src={imageUrl} alt={name} className="h-full w-full object-cover" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <h4 className="font-medium text-sm truncate">{name}</h4>
+                                      {setName && (
+                                        <div className="flex items-center gap-1 mt-1">
+                                          <span
+                                            className="inline-block h-2 w-2 rounded-full"
+                                            style={{ backgroundColor: info?.setColor || 'var(--muted-foreground)' }}
+                                          />
+                                          <span className="text-xs text-muted-foreground truncate">
+                                            {setName}{info?.setAbbr && ` (${info.setAbbr})`}
+                                          </span>
+                                        </div>
+                                      )}
+                                      <p className="text-xs text-muted-foreground mt-1">Owned: {row.quantity}</p>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => handleAddFromHolding(row)}
+                                      className="shrink-0"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="catalog" className="mt-4">
+                      <div className="space-y-4">
+                        <form onSubmit={handleSearch} className="flex gap-2">
+                          <Input
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder="Search cards in catalog..."
+                            className="flex-1"
+                          />
+                          <Button type="submit" disabled={searching} size="icon">
+                            {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                          </Button>
+                        </form>
+
+                        {searchError && (
+                          <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg border border-destructive/20">
+                            {searchError}
+                          </div>
+                        )}
+
+                        <div className="h-[500px] overflow-y-auto" ref={catalogScrollRef}>
+                          {searchResults.length === 0 && !searching ? (
+                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                              <div className="h-12 w-12 bg-muted rounded-full flex items-center justify-center mb-4">
+                                <Search className="h-6 w-6 text-muted-foreground" />
+                              </div>
+                              <p className="text-muted-foreground">Search for cards to add to your deck</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {searchResults.map((result, idx) => {
+                                const productId = Number(result?.productId ?? result?.ProductId)
+                                if (!Number.isFinite(productId)) return null
+                                const key = `${productId}:${idx}`
+                                const info = productInfo[String(productId)]
+                                const name = info?.name ?? result?.name ?? result?.productName ?? `#${productId}`
+                                const setName = info?.setName ?? result?.groupName ?? result?.setName
+                                const imageUrl = info?.imageUrl ?? fallbackImage(productId)
+                                return (
+                                  <div key={key} className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 transition-colors">
+                                    <div className="h-12 w-9 rounded overflow-hidden bg-muted">
+                                      <img src={imageUrl} alt={name} className="h-full w-full object-cover" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <h4 className="font-medium text-sm truncate">{name}</h4>
+                                      {setName && (
+                                        <div className="flex items-center gap-1 mt-1">
+                                          <span
+                                            className="inline-block h-2 w-2 rounded-full"
+                                            style={{ backgroundColor: info?.setColor || 'var(--muted-foreground)' }}
+                                          />
+                                          <span className="text-xs text-muted-foreground truncate">
+                                            {setName}{info?.setAbbr && ` (${info.setAbbr})`}
+                                          </span>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => handleAddFromSearch(result)}
+                                      className="shrink-0"
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="ai" className="mt-4">
+                      <div className="space-y-4">
+                        <div className="space-y-3">
+                          <div className="space-y-2">
+                            <label className="text-sm font-medium">Goal / Archetype</label>
+                            <Input
+                              value={aiGoal}
+                              onChange={(e) => setAiGoal(e.target.value)}
+                              placeholder="e.g., Aggro, Control, Combo..."
                             />
                           </div>
-                          <div className="flex-1 space-y-1">
-                            <div className="text-sm font-medium">{name}</div>
-                            {setName && (
-                              <div className="text-xs text-muted-foreground flex items-center gap-1">
-                                <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: dot || 'var(--muted-foreground)' }} />
-                                {setName}
-                                {info?.setAbbr && (
-                                  <span className="uppercase opacity-70">({info.setAbbr})</span>
-                                )}
-                              </div>
-                            )}
+
+                          {selectedTcg === 'mtg' && (currentDeck.format || '').toLowerCase() === 'commander' && (
+                            <div className="space-y-2">
+                              <label className="text-sm font-medium">Commander</label>
+                              <Input
+                                value={aiCommander}
+                                onChange={(e) => setAiCommander(e.target.value)}
+                                placeholder="Name your commander"
+                              />
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between p-3 border rounded-lg">
+                            <div>
+                              <p className="font-medium text-sm">Enforce Format Rules</p>
+                              <p className="text-xs text-muted-foreground">Follow format restrictions</p>
+                            </div>
+                            <Switch checked={aiEnforce} onCheckedChange={setAiEnforce} />
                           </div>
-                          <Button size="sm" onClick={() => handleAddFromSearch(result)}>
-                            Add to Deck
-                          </Button>
                         </div>
-                      )
-                    })}
-                  </div>
-                </ScrollArea>
-              )}
-            </CardContent>
-          </Card>
+
+                        <Button onClick={handleAiBuild} disabled={aiBusy} className="w-full">
+                          {aiBusy ? (
+                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />Building deck...</>
+                          ) : (
+                            <><Sparkles className="h-4 w-4 mr-2" />Build with AI</>
+                          )}
+                        </Button>
+
+                        {aiError && (
+                          <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg border border-destructive/20">
+                            {aiError}
+                          </div>
+                        )}
+
+                        <div className="h-[360px] overflow-y-auto" ref={aiScrollRef}>
+                          {aiPlan ? (
+                            <div className="text-sm text-muted-foreground whitespace-pre-wrap p-3 bg-muted/30 rounded-lg">
+                              {aiPlan}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center justify-center py-8 text-center">
+                              <div className="h-12 w-12 bg-muted rounded-full flex items-center justify-center mb-4">
+                                <Sparkles className="h-6 w-6 text-muted-foreground" />
+                              </div>
+                              <p className="text-muted-foreground">AI will create a deck plan based on your collection</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
         </div>
       </div>
-      {/* Details Modal */}
+
+      {/* Card Details Modal */}
       <CardDetailsModal
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
