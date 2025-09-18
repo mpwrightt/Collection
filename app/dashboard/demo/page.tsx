@@ -87,11 +87,6 @@ const slides: Slide[] = [
                 </div>
               </div>
             </div>
-            <div className="bg-amber-100 dark:bg-amber-900/30 rounded-lg p-3 border border-amber-200 dark:border-amber-800">
-              <p className="text-sm text-amber-800 dark:text-amber-200 text-center font-medium">
-                🚀 This Collection Tracker app represents a complete hackathon build using only AI assistance
-              </p>
-            </div>
           </CardContent>
         </Card>
 
