@@ -219,7 +219,7 @@ export default function CleanFolderDetailPage() {
     if (!conditionData) return itemPrices[pid] || 0
 
     const skus = itemSkus[pid] || []
-    const conditionSku = skus.find(sku => sku.conditionId === conditionData.conditionId)
+    const conditionSku = skus.find(sku => Number(sku.conditionId ?? sku.ConditionId) === Number(conditionData.conditionId))
 
     if (conditionSku && conditionSku.price) {
       return conditionSku.price
@@ -273,10 +273,16 @@ export default function CleanFolderDetailPage() {
       const enrichedSkuMap: Record<string, any[]> = {}
       Object.keys(skuMap).forEach(pid => {
         enrichedSkuMap[pid] = skuMap[pid].map((sku: any) => {
-          const pricing = skuPricing.find((p: any) => p.skuId === sku.skuId)
+          const thisSkuId = Number(sku?.skuId ?? sku?.SkuId ?? sku?.productConditionId)
+          const pricing = skuPricing.find((p: any) => {
+            const pSkuId = Number(p?.skuId ?? p?.SkuId ?? p?.productConditionId)
+            return Number.isFinite(thisSkuId) && Number.isFinite(pSkuId) && pSkuId === thisSkuId
+          })
+          const price = [pricing?.marketPrice, pricing?.midPrice, pricing?.lowPrice, pricing?.directLowPrice, pricing?.highPrice]
+            .find((v) => typeof v === 'number' && v > 0) || 0
           return {
             ...sku,
-            price: pricing?.marketPrice || pricing?.midPrice || pricing?.lowPrice || 0
+            price,
           }
         })
       })
@@ -289,7 +295,7 @@ export default function CleanFolderDetailPage() {
             const list = enrichedSkuMap[pidKey] || []
             const conditionEntry = CONDITIONS.find(c => c.value === (it.condition || 'NM'))
             if (conditionEntry) {
-              const match = list.find((s: any) => Number(s.conditionId) === Number((conditionEntry as any).conditionId))
+              const match = list.find((s: any) => Number(s.conditionId ?? s.ConditionId) === Number((conditionEntry as any).conditionId))
               if (match?.skuId) {
                 try {
                   await updateItemFields({ itemId: it._id as any, skuId: Number(match.skuId) })
@@ -622,12 +628,17 @@ export default function CleanFolderDetailPage() {
 
   // Enhanced KPI calculations
   const kpiData = React.useMemo(() => {
-    // Use backend summary when available, fallback to computed
+    // Prefer live computed value; fallback to backend summary when live is 0 (e.g., no prices yet)
     const backendSummary = summary && summary.totalQuantity > 0 ? summary : null
 
-    const totalQuantity = backendSummary?.totalQuantity || filteredCards.reduce((s, c) => s + (c.quantity || 0), 0)
-    const distinctProducts = backendSummary?.distinctProducts || new Set(filteredCards.map(c => c.productId)).size
-    const estimatedValue = backendSummary?.estimatedValue || filteredCards.reduce((s, c) => s + (c.marketPrice * (c.quantity || 0)), 0)
+    const liveTotalQuantity = filteredCards.reduce((s, c) => s + (c.quantity || 0), 0)
+    const liveDistinct = new Set(filteredCards.map(c => c.productId)).size
+    const liveEstimated = filteredCards.reduce((s, c) => s + (c.marketPrice * (c.quantity || 0)), 0)
+
+    // Choose the higher between backend summary and live when both exist; this avoids under-reporting when summary lags
+    const estimatedValue = Math.max(liveEstimated, backendSummary?.estimatedValue ?? 0)
+    const totalQuantity = Math.max(liveTotalQuantity, backendSummary?.totalQuantity ?? 0)
+    const distinctProducts = Math.max(liveDistinct, backendSummary?.distinctProducts ?? 0)
 
     // Additional computed metrics
     const avgCardValue = totalQuantity > 0 ? estimatedValue / totalQuantity : 0
@@ -657,7 +668,7 @@ export default function CleanFolderDetailPage() {
       highValueCards,
       midValueCards,
       lowValueCards,
-      isUsingBackendData: !!backendSummary
+      isUsingBackendData: estimatedValue === (backendSummary?.estimatedValue ?? 0) && (backendSummary?.estimatedValue ?? 0) >= liveEstimated
     }
   }, [filteredCards, summary])
 
