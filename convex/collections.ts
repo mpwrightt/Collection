@@ -963,6 +963,105 @@ export const updateCollectionSummaryProgress = mutation({
   }
 })
 
+// Compute dominant set progress for a collection using TCG catalog metadata
+export const getCollectionSetProgress = action({
+  args: { collectionId: v.id("collections") },
+  handler: async (ctx, { collectionId }) => {
+    'use node'
+
+    const EMPTY = {
+      completionPercentage: 0,
+      missingCards: 0,
+      setName: null as string | null,
+      setAbbreviation: null as string | null,
+      targetCardCount: 0,
+      ownedTargetCards: 0,
+    }
+
+    try {
+      // Load collection items
+      const rawItems = await ctx.runQuery(api.collections.listItems, { collectionId } as any)
+      const items: any[] = Array.isArray(rawItems) ? rawItems : []
+      if (items.length === 0) return EMPTY
+
+      // Build owned product set
+      const ownedProductIds = Array.from(new Set(
+        items.map((it) => Number(it.productId)).filter((n) => Number.isFinite(n) && n > 0)
+      ))
+      if (ownedProductIds.length === 0) return EMPTY
+
+      // Use local setCards mapping to find which sets these products belong to
+      const memberships: Array<{ productId: number; setIds: string[] }> = await ctx.runQuery(api.sets.getSetMembershipForProducts as any, { productIds: ownedProductIds } as any)
+
+      // Count ownership per setId
+      const setToOwned = new Map<string, Set<number>>()
+      for (const { productId, setIds } of memberships) {
+        for (const sid of setIds) {
+          if (!setToOwned.has(sid)) setToOwned.set(sid, new Set<number>())
+          setToOwned.get(sid)!.add(productId)
+        }
+      }
+
+      // Pick dominant setId by owned product count
+      let dominantSetId: string | null = null
+      let dominantOwned: Set<number> | null = null
+      for (const [sid, ownedSet] of setToOwned.entries()) {
+        if (!dominantOwned || ownedSet.size > dominantOwned.size) {
+          dominantSetId = sid
+          dominantOwned = ownedSet
+        }
+      }
+      if (!dominantSetId || !dominantOwned || dominantOwned.size === 0) return EMPTY
+
+      // Fetch set metadata locally
+      const setsMeta: any[] = await ctx.runQuery(api.sets.getSetsByIds as any, { setIds: [dominantSetId] } as any)
+      const meta = setsMeta?.[0]
+      const setName: string | null = meta?.name ?? null
+      const setAbbreviation: string | null = meta?.abbreviation ?? null
+
+      // Fetch set cards locally to know the total and productIds
+      const setWithCards: any = await ctx.runQuery(api.sets.getSetWithCards as any, { setId: dominantSetId } as any)
+      const productIdsInSet = new Set<number>((setWithCards?.cards ?? []).map((c: any) => Number(c.productId)).filter((n: any) => Number.isFinite(n) && n > 0))
+      const targetCardCount = productIdsInSet.size
+      if (targetCardCount === 0) return EMPTY
+
+      let ownedTargetCards = 0
+      for (const pid of dominantOwned) {
+        if (productIdsInSet.has(pid)) ownedTargetCards++
+      }
+
+      const missingCards = Math.max(0, targetCardCount - ownedTargetCards)
+      const completionPercentage = targetCardCount > 0 ? (ownedTargetCards / targetCardCount) * 100 : 0
+
+      const progress = {
+        completionPercentage: Math.min(100, Math.max(0, completionPercentage)),
+        missingCards,
+        setName,
+        setAbbreviation,
+        targetCardCount,
+        ownedTargetCards,
+      }
+
+      await ctx.runMutation(api.collections.updateCollectionSummaryProgress, {
+        collectionId,
+        progress: {
+          completionPercentage: progress.completionPercentage,
+          missingCards: progress.missingCards,
+          setName: progress.setName ?? undefined,
+          setAbbreviation: progress.setAbbreviation ?? undefined,
+          targetCardCount: progress.targetCardCount,
+          ownedTargetCards: progress.ownedTargetCards,
+        }
+      })
+
+      return progress
+    } catch (error) {
+      console.warn('Failed to compute collection set progress', error)
+      return EMPTY
+    }
+  }
+})
+
 // Get overall collection statistics for the user
 export const getCollectionStats = query({
   args: {},

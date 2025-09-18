@@ -24,6 +24,41 @@ export const createSet = mutation({
   },
 });
 
+// For a list of productIds, return which setIds they belong to (via setCards)
+export const getSetMembershipForProducts = query({
+  args: { productIds: v.array(v.number()) },
+  handler: async (ctx, { productIds }) => {
+    const clean = Array.from(new Set(productIds.filter((n) => Number.isFinite(n) && n > 0)))
+    const out: Array<{ productId: number; setIds: string[] }> = []
+    for (const pid of clean) {
+      const entries = await ctx.db
+        .query("setCards")
+        .withIndex("byProductId", (q: any) => q.eq("productId", pid))
+        .collect()
+      const setIds = Array.from(new Set(entries.map((e: any) => String(e.setId))))
+      out.push({ productId: pid, setIds })
+    }
+    return out
+  }
+})
+
+// Fetch sets by IDs (metadata needed for progress display)
+export const getSetsByIds = query({
+  args: { setIds: v.array(v.string()) },
+  handler: async (ctx, { setIds }) => {
+    const clean = Array.from(new Set(setIds.filter((s) => typeof s === 'string' && s.length > 0)))
+    const results: any[] = []
+    for (const sid of clean) {
+      const set = await ctx.db
+        .query("sets")
+        .withIndex("bySetId", (q: any) => q.eq("setId", sid))
+        .first()
+      if (set) results.push(set)
+    }
+    return results
+  }
+})
+
 // Add a card to a set
 export const addCardToSet = mutation({
   args: {

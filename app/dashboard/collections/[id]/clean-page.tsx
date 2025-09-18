@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import {
   ArrowLeft,
@@ -115,6 +116,15 @@ const RARITIES = [
   { value: "secret", label: "Secret Rare", color: "text-purple-500" },
 ]
 
+type CollectionSetProgress = {
+  completionPercentage: number
+  missingCards: number
+  setName: string | null
+  setAbbreviation: string | null
+  targetCardCount: number
+  ownedTargetCards: number
+}
+
 const VIEW_MODES = [
   { value: "grid", label: "Grid", icon: LayoutGrid },
   { value: "list", label: "List", icon: List },
@@ -161,6 +171,7 @@ export default function CleanFolderDetailPage() {
     averageValue: 0,
     completionPercentage: 0,
     missingCards: 0,
+    setName: null,
     setAbbreviation: null,
     targetCardCount: 0,
     ownedTargetCards: 0,
@@ -184,6 +195,7 @@ export default function CleanFolderDetailPage() {
   const upsertPrices = useMutation(api.pricing.upsertPrices)
   const getSkus = useAction(api.tcg.getSkus)
   const getGroupsByIds = useAction(api.tcg.getGroupsByIds)
+  const getCollectionSetProgress = useAction(api.collections.getCollectionSetProgress)
 
   // Enrichment maps for product names, thumbs, and prices
   const [itemNames, setItemNames] = React.useState<Record<string, string>>({})
@@ -195,6 +207,8 @@ export default function CleanFolderDetailPage() {
   const [itemRarities, setItemRarities] = React.useState<Record<string, string>>({})
   const [itemSkus, setItemSkus] = React.useState<Record<string, any[]>>({}) // productId -> SKU array
   const [lastPriceRefresh, setLastPriceRefresh] = React.useState<Date>(new Date())
+  const [collectionProgress, setCollectionProgress] = React.useState<CollectionSetProgress | null>(null)
+  const [collectionProgressLoading, setCollectionProgressLoading] = React.useState(false)
 
   // We fetch fresh prices every time to ensure real-time accuracy
 
@@ -525,6 +539,39 @@ export default function CleanFolderDetailPage() {
     })
   }, [collectionId, isRealCollectionId, latestItemUpdate, refreshCollectionSummary])
 
+  React.useEffect(() => {
+    if (!isRealCollectionId) {
+      setCollectionProgress(null)
+      return
+    }
+    let cancelled = false
+    const fetchProgress = async () => {
+      try {
+        setCollectionProgressLoading(true)
+        const result = await getCollectionSetProgress({ collectionId } as any)
+        if (cancelled) return
+        if (result) {
+          setCollectionProgress({
+            completionPercentage: Number.isFinite(result.completionPercentage) ? result.completionPercentage : 0,
+            missingCards: result.missingCards ?? 0,
+            setName: result.setName ?? null,
+            setAbbreviation: result.setAbbreviation ?? null,
+            targetCardCount: result.targetCardCount ?? 0,
+            ownedTargetCards: result.ownedTargetCards ?? 0,
+          })
+        }
+      } catch (error) {
+        if (!cancelled) console.warn('Failed to fetch collection set progress', error)
+      } finally {
+        if (!cancelled) setCollectionProgressLoading(false)
+      }
+    }
+    fetchProgress()
+    return () => {
+      cancelled = true
+    }
+  }, [collectionId, isRealCollectionId, items.length, getCollectionSetProgress])
+
   // Filter and sort cards
   const filteredCards = React.useMemo(() => {
     let filtered = [...renderCards]
@@ -557,6 +604,21 @@ export default function CleanFolderDetailPage() {
     
     return filtered
   }, [renderCards, searchQuery, sortBy])
+
+  const progressDisplay = React.useMemo(() => {
+    const canonical = {
+      completionPercentage: summary?.completionPercentage ?? 0,
+      missingCards: summary?.missingCards ?? 0,
+      targetCardCount: summary?.targetCardCount ?? 0,
+      ownedTargetCards: summary?.ownedTargetCards ?? 0,
+      setName: summary?.setName ?? null,
+      setAbbreviation: summary?.setAbbreviation ?? null,
+    }
+    if (collectionProgress && collectionProgress.targetCardCount > 0) {
+      return collectionProgress
+    }
+    return canonical
+  }, [collectionProgress, summary])
 
   // Enhanced KPI calculations
   const kpiData = React.useMemo(() => {
@@ -968,6 +1030,44 @@ export default function CleanFolderDetailPage() {
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {progressDisplay.targetCardCount > 0 ? (
+                  <Card className="border-0 bg-gradient-to-br from-slate-50/80 to-slate-100/60 dark:from-slate-950/30 dark:to-slate-900/20 col-span-2">
+                    <CardContent className="p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-700 dark:text-slate-300 uppercase tracking-wide">Set Progress</p>
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground truncate">
+                            <span className="truncate">{progressDisplay.setName || 'Primary Set'}</span>
+                            {progressDisplay.setAbbreviation && (
+                              <span className="uppercase opacity-70">({progressDisplay.setAbbreviation})</span>
+                            )}
+                          </div>
+                          <div className="mt-2">
+                            <Progress value={Math.round(Math.min(100, Math.max(0, progressDisplay.completionPercentage)))} />
+                          </div>
+                          <div className="flex items-center justify-between mt-1 text-xs text-muted-foreground">
+                            <span>{progressDisplay.ownedTargetCards} / {progressDisplay.targetCardCount} cards</span>
+                            <span>{Math.round(Math.min(100, Math.max(0, progressDisplay.completionPercentage)))}%</span>
+                          </div>
+                          {progressDisplay.missingCards > 0 && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {progressDisplay.missingCards} cards missing
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : collectionProgressLoading ? (
+                  <Card className="border-0 col-span-2">
+                    <CardContent className="p-3 space-y-2">
+                      <div className="h-4 w-24 bg-muted animate-pulse rounded" />
+                      <div className="h-2 w-full bg-muted animate-pulse rounded" />
+                      <div className="h-2 w-3/4 bg-muted animate-pulse rounded" />
+                    </CardContent>
+                  </Card>
+                ) : null}
+
                 <Card className="border-0 bg-gradient-to-br from-blue-50/80 to-blue-100/60 dark:from-blue-950/30 dark:to-blue-900/20">
                   <CardContent className="p-3">
                     <div className="flex items-center justify-between">

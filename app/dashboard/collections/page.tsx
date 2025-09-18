@@ -78,6 +78,24 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
+// Simple global semaphore to throttle concurrent folder progress fetches
+const MAX_PROGRESS_CONCURRENCY = 4
+let progressInFlight = 0
+const progressWaiters: Array<() => void> = []
+async function acquireProgressSlot() {
+  if (progressInFlight < MAX_PROGRESS_CONCURRENCY) {
+    progressInFlight++
+    return
+  }
+  await new Promise<void>((resolve) => progressWaiters.push(resolve))
+  progressInFlight++
+}
+function releaseProgressSlot() {
+  progressInFlight = Math.max(0, progressInFlight - 1)
+  const next = progressWaiters.shift()
+  if (next) next()
+}
+
 interface CollectionFolder {
   _id: string
   name: string
@@ -112,6 +130,15 @@ type CollectionSummary = {
   ownedTargetCards: number
   latestItemUpdatedAt: number
   updatedAt: number
+}
+
+type CollectionSetProgress = {
+  completionPercentage: number
+  missingCards: number
+  setName: string | null
+  setAbbreviation: string | null
+  targetCardCount: number
+  ownedTargetCards: number
 }
 
 const VIEW_MODES = [
@@ -209,6 +236,7 @@ export default function CollectionsPage() {
   const deleteCollection = useMutation(api.collections.deleteCollection)
   const addPricingForUserCards = useMutation(api.debug.addPricingForUserCards)
   const refreshAllPrices = useAction(api.collections.refreshAllPricesAndSummaries)
+  const getCollectionSetProgress = useAction(api.collections.getCollectionSetProgress)
 
   // Get collection stats
   
@@ -241,6 +269,8 @@ export default function CollectionsPage() {
     }
     return map
   }, [summaries])
+
+  const progressCacheRef = React.useRef<Map<string, CollectionSetProgress>>(new Map())
 
   // Auto-refresh SKU pricing and summaries once on page load (no button)
   React.useEffect(() => {
@@ -444,7 +474,7 @@ export default function CollectionsPage() {
     const summaryTargetCardCount = summary?.targetCardCount ?? 0
     const summaryOwnedTargetCards = summary?.ownedTargetCards ?? 0
 
-    const derivedTargetCardCount = React.useMemo(() => {
+    const baseTargetCardCount = React.useMemo(() => {
       if (summaryTargetCardCount > 0) return summaryTargetCardCount
       if (completionPercentage > 0 && completionPercentage < 100 && missingCards > 0) {
         const denom = 1 - completionPercentage / 100
@@ -457,15 +487,99 @@ export default function CollectionsPage() {
       return 0
     }, [summaryTargetCardCount, completionPercentage, missingCards, summaryOwnedTargetCards])
 
-    const derivedOwnedTargetCards = React.useMemo(() => {
+    const baseOwnedTargetCards = React.useMemo(() => {
       if (summaryOwnedTargetCards > 0) return summaryOwnedTargetCards
-      if (derivedTargetCardCount > 0) {
-        return Math.max(0, derivedTargetCardCount - missingCards)
+      if (baseTargetCardCount > 0) {
+        return Math.max(0, baseTargetCardCount - missingCards)
       }
       return 0
-    }, [summaryOwnedTargetCards, derivedTargetCardCount, missingCards])
+    }, [summaryOwnedTargetCards, baseTargetCardCount, missingCards])
 
-    const hasTargetCounts = derivedTargetCardCount > 0
+    const cachedProgress = progressCacheRef.current.get(String(folder._id)) ?? null
+    const [asyncProgress, setAsyncProgress] = React.useState<CollectionSetProgress | null>(cachedProgress)
+    const [progressLoading, setProgressLoading] = React.useState(false)
+    const [progressError, setProgressError] = React.useState<string | null>(null)
+
+    React.useEffect(() => {
+      if (asyncProgress) return
+      const cacheHit = progressCacheRef.current.get(String(folder._id))
+      if (cacheHit) {
+        setAsyncProgress(cacheHit)
+        return
+      }
+      const summaryHasProgress = completionPercentage > 0 || summaryTargetCardCount > 0 || summaryOwnedTargetCards > 0
+      if (summaryHasProgress) return
+
+      let cancelled = false
+      setProgressLoading(true)
+      setProgressError(null)
+      ;(async () => {
+        // small jitter to avoid stampede on first render
+        await new Promise((r) => setTimeout(r, 50 + Math.floor(Math.random() * 200)))
+        await acquireProgressSlot()
+        try {
+          const result = await getCollectionSetProgress({ collectionId: folder._id as any })
+          if (cancelled) return
+          if (result) {
+            const normalized: CollectionSetProgress = {
+              completionPercentage: Number.isFinite(result.completionPercentage) ? result.completionPercentage : 0,
+              missingCards: result.missingCards ?? 0,
+              setName: result.setName ?? null,
+              setAbbreviation: result.setAbbreviation ?? null,
+              targetCardCount: result.targetCardCount ?? 0,
+              ownedTargetCards: result.ownedTargetCards ?? 0,
+            }
+            progressCacheRef.current.set(String(folder._id), normalized)
+            setAsyncProgress(normalized)
+          }
+        } catch (error) {
+          if (cancelled) return
+          console.error('Failed to load collection set progress', error)
+          setProgressError('Could not load set progress')
+        } finally {
+          releaseProgressSlot()
+          if (!cancelled) setProgressLoading(false)
+        }
+      })()
+
+      return () => {
+        cancelled = true
+      }
+    }, [asyncProgress, completionPercentage, summaryTargetCardCount, summaryOwnedTargetCards, folder._id, getCollectionSetProgress])
+
+    React.useEffect(() => {
+      if (asyncProgress) {
+        progressCacheRef.current.set(String(folder._id), asyncProgress)
+      }
+    }, [asyncProgress, folder._id])
+
+    const effectiveProgress = React.useMemo(() => {
+      const fallback: CollectionSetProgress = {
+        completionPercentage,
+        missingCards,
+        setName,
+        setAbbreviation,
+        targetCardCount: baseTargetCardCount,
+        ownedTargetCards: baseOwnedTargetCards,
+      }
+      if (!asyncProgress) return fallback
+      return {
+        completionPercentage: Number.isFinite(asyncProgress.completionPercentage) ? asyncProgress.completionPercentage : fallback.completionPercentage,
+        missingCards: asyncProgress.missingCards ?? fallback.missingCards,
+        setName: asyncProgress.setName ?? fallback.setName,
+        setAbbreviation: asyncProgress.setAbbreviation ?? fallback.setAbbreviation,
+        targetCardCount: asyncProgress.targetCardCount > 0 ? asyncProgress.targetCardCount : fallback.targetCardCount,
+        ownedTargetCards: asyncProgress.ownedTargetCards > 0 ? asyncProgress.ownedTargetCards : fallback.ownedTargetCards,
+      }
+    }, [asyncProgress, completionPercentage, missingCards, setName, setAbbreviation, baseTargetCardCount, baseOwnedTargetCards])
+
+    const displayCompletion = Math.min(100, Math.max(0, effectiveProgress.completionPercentage))
+    const displayMissing = effectiveProgress.missingCards
+    const displayTargetCount = effectiveProgress.targetCardCount
+    const displayOwnedCount = effectiveProgress.ownedTargetCards
+    const displaySetName = effectiveProgress.setName ?? null
+    const displaySetAbbr = effectiveProgress.setAbbreviation ?? null
+    const hasTargetCounts = displayTargetCount > 0
 
     return (
       <div 
@@ -620,11 +734,11 @@ export default function CollectionsPage() {
             <div>
               <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
                 <span className="flex items-center gap-1 truncate">
-                  {setName ? (
+                  {displaySetName ? (
                     <>
-                      <span className="truncate">{setName}</span>
-                      {setAbbreviation && (
-                        <span className="uppercase opacity-70">({setAbbreviation})</span>
+                      <span className="truncate">{displaySetName}</span>
+                      {displaySetAbbr && (
+                        <span className="uppercase opacity-70">({displaySetAbbr})</span>
                       )}
                       <span className="shrink-0">Completion</span>
                     </>
@@ -632,18 +746,22 @@ export default function CollectionsPage() {
                     "Collection Progress"
                   )}
                 </span>
-                <span>{Math.round(completionPercentage)}%</span>
+                <span>{Math.round(displayCompletion)}%</span>
               </div>
-              <Progress value={completionPercentage} className="h-2" />
-              {hasTargetCounts ? (
+              <Progress value={displayCompletion} className="h-2" />
+              {progressLoading && !hasTargetCounts ? (
+                <p className="text-xs text-muted-foreground mt-1">Calculating set progress…</p>
+              ) : hasTargetCounts ? (
                 <p className="text-xs text-muted-foreground mt-1">
-                  {derivedOwnedTargetCards} / {derivedTargetCardCount} cards
-                  {missingCards > 0 ? ` • ${missingCards} missing` : ""}
+                  {displayOwnedCount} / {displayTargetCount} cards
+                  {displayMissing > 0 ? ` • ${displayMissing} missing` : ""}
                 </p>
-              ) : missingCards > 0 ? (
+              ) : displayMissing > 0 ? (
                 <p className="text-xs text-muted-foreground mt-1">
-                  {missingCards} cards missing
+                  {displayMissing} cards missing
                 </p>
+              ) : progressError ? (
+                <p className="text-xs text-muted-foreground mt-1">{progressError}</p>
               ) : null}
             </div>
           </div>
